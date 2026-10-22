@@ -252,6 +252,23 @@ describe('MCP Tools', () => {
       expect(task.assignee).toBe('agent-x');
     });
 
+    it('accepts 4000 description characters and rejects 4001', async () => {
+      const description = 'x'.repeat(4000);
+      const accepted = await callTool(client, 'create_task', {
+        title: 'At limit',
+        description,
+      });
+      expect(accepted.isError).toBeUndefined();
+      expect(accepted.json().description).toBe(description);
+
+      const rejected = await callTool(client, 'create_task', {
+        title: 'Over limit',
+        description: `${description}x`,
+      });
+      expect(rejected.isError).toBe(true);
+      expect(store.getTasks()).toHaveLength(1);
+    });
+
     it('returns error for invalid column', async () => {
       const result = await callTool(client, 'create_task', {
         title: 'Task',
@@ -323,6 +340,27 @@ describe('MCP Tools', () => {
       expect(task.description).toBe('New desc');
       expect(task.priority).toBe('P2');
       expect(task.assignee).toBe('someone');
+    });
+
+    it('accepts 4000 description characters and rejects 4001', async () => {
+      const created = await callTool(client, 'create_task', { title: 'Task' });
+      const id = created.json().id as string;
+      const description = 'x'.repeat(4000);
+      const accepted = await callTool(client, 'update_task', {
+        id,
+        description,
+      });
+      expect(accepted.isError).toBeUndefined();
+      expect(accepted.json().description).toBe(description);
+
+      const rejected = await callTool(client, 'update_task', {
+        id,
+        description: `${description}x`,
+      });
+      expect(rejected.isError).toBe(true);
+      expect(store.getTasks().find((task) => task.id === id)?.description).toBe(
+        description,
+      );
     });
 
     it('returns error for non-existent task', async () => {
