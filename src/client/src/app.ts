@@ -18,11 +18,12 @@ export class KanbrawlApp extends LitElement {
   @state() private connected = false;
   @state() private error: string | undefined = null;
   @state() private theme: Theme = 'dark';
-  @state() private selectedTask: Task | undefined = null;
+  @state() private selectedTaskId: string | undefined;
 
   private eventSource: EventSource | undefined = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined = null;
   private reconnectDelay = 1000;
+  private previousBodyOverflow: string | undefined;
 
   private static get MAX_RECONNECT_DELAY() {
     return 30_000;
@@ -242,28 +243,54 @@ export class KanbrawlApp extends LitElement {
       overflow: hidden;
     }
 
-    .detail-panel {
-      width: 380px;
-      flex-shrink: 0;
+    /*
+     * Native <dialog> + showModal() is used deliberately: the browser provides
+     * the top layer, inert background, focus trap, Esc handling and focus
+     * restoration. Only backdrop dismissal and scroll locking are ours.
+     * Sizes follow Carbon's large modal guidance (up to 96% of the viewport),
+     * then cap at a comfortable reading width on 4K displays.
+     */
+    .task-detail {
+      width: min(1680px, calc(100vw - 48px));
+      height: min(88dvh, 1100px);
+      max-height: calc(100dvh - 24px);
+      margin: auto;
+      padding: 0;
+      border: 1px solid var(--border-default);
+      border-radius: 14px;
       background: var(--bg-surface);
-      border-left: 1px solid var(--border-default);
-      display: flex;
-      flex-direction: column;
-      overflow-y: auto;
-      animation: slideInPanel 0.2s ease-out;
+      color: var(--text-primary);
+      box-shadow: 0 24px 80px var(--shadow);
+      overflow: hidden;
       transition:
         background 0.3s ease,
         border-color 0.3s ease;
     }
 
-    @keyframes slideInPanel {
+    .task-detail[open] {
+      display: flex;
+      flex-direction: column;
+      animation: dialogIn 0.18s ease-out;
+    }
+
+    .task-detail::backdrop {
+      background: rgba(4, 4, 10, 0.62);
+    }
+
+    @keyframes dialogIn {
       from {
-        transform: translateX(20px);
         opacity: 0;
+        transform: translateY(8px) scale(0.99);
       }
       to {
-        transform: translateX(0);
         opacity: 1;
+        transform: translateY(0) scale(1);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .task-detail[open] {
+        animation: none;
       }
     }
 
@@ -271,8 +298,9 @@ export class KanbrawlApp extends LitElement {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 16px 20px;
+      padding: 14px 20px;
       border-bottom: 1px solid var(--border-subtle);
+      flex-shrink: 0;
     }
 
     .detail-header-title {
@@ -289,8 +317,8 @@ export class KanbrawlApp extends LitElement {
       border: 1px solid var(--border-input);
       color: var(--text-secondary);
       cursor: pointer;
-      width: 28px;
-      height: 28px;
+      width: 30px;
+      height: 30px;
       border-radius: 6px;
       font-size: 14px;
       line-height: 1;
@@ -306,19 +334,45 @@ export class KanbrawlApp extends LitElement {
       background: var(--accent-bg);
     }
 
-    .detail-body {
-      padding: 20px;
-      display: flex;
-      flex-direction: column;
-      gap: 20px;
+    .detail-close:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
     }
 
-    .detail-task-title {
-      font-size: 18px;
-      font-weight: 700;
-      color: var(--text-primary);
-      line-height: 1.4;
-      word-break: break-word;
+    .detail-scroll {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding: 28px 32px 32px;
+    }
+
+    .detail-scroll::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .detail-scroll::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .detail-scroll::-webkit-scrollbar-thumb {
+      background: var(--scrollbar);
+      border-radius: 3px;
+    }
+
+    .detail-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      gap: clamp(24px, 3vw, 48px);
+      align-items: start;
+      min-height: 100%;
+    }
+
+    .detail-main {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
     }
 
     .detail-badges {
@@ -357,9 +411,13 @@ export class KanbrawlApp extends LitElement {
       color: var(--text-secondary);
     }
 
-    .detail-badge.assignee {
-      background: var(--accent-bg);
-      color: var(--accent);
+    .detail-task-title {
+      font-size: clamp(22px, 1.6vw, 30px);
+      font-weight: 700;
+      color: var(--text-primary);
+      line-height: 1.3;
+      margin: 0;
+      word-break: break-word;
     }
 
     .detail-section-label {
@@ -369,27 +427,66 @@ export class KanbrawlApp extends LitElement {
       letter-spacing: 2px;
       text-transform: uppercase;
       color: var(--text-dimmed);
-      margin-bottom: 6px;
+      margin: 0 0 8px;
     }
 
     .detail-description {
-      font-size: 14px;
+      max-width: 90ch;
+      font-size: 15px;
       color: var(--text-secondary);
-      line-height: 1.7;
+      line-height: 1.75;
       word-break: break-word;
       white-space: pre-wrap;
     }
 
-    .detail-timestamps {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
+    .detail-description.is-empty {
+      color: var(--text-dimmed);
+      font-style: italic;
+    }
+
+    .detail-sidebar {
+      min-width: 0;
+      align-self: stretch;
+      border-left: 1px solid var(--border-subtle);
+      padding-left: clamp(20px, 2vw, 32px);
+    }
+
+    .detail-meta {
+      display: grid;
+      grid-template-columns: 92px minmax(0, 1fr);
+      gap: 10px 12px;
+      margin: 0;
+      font-size: 13px;
+    }
+
+    .detail-meta dt {
       font-family: 'Space Mono', monospace;
       font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
       color: var(--text-dimmed);
-      letter-spacing: 0.5px;
-      padding-top: 12px;
-      border-top: 1px solid var(--border-subtle);
+      padding-top: 2px;
+    }
+
+    .detail-meta dd {
+      margin: 0;
+      color: var(--text-secondary);
+      word-break: break-word;
+    }
+
+    @media (max-width: 900px) {
+      .detail-layout {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 24px;
+      }
+
+      .detail-sidebar {
+        border-left: none;
+        border-top: 1px solid var(--border-subtle);
+        padding-left: 0;
+        padding-top: 20px;
+      }
     }
 
     @media (max-width: 600px) {
@@ -433,14 +530,20 @@ export class KanbrawlApp extends LitElement {
         overflow: auto;
       }
 
-      .detail-panel {
-        width: 100%;
-        max-width: 100%;
-        position: fixed;
-        top: 0;
-        right: 0;
-        bottom: 0;
-        z-index: 100;
+      .task-detail {
+        width: calc(100vw - 16px);
+        height: auto;
+        min-height: 0;
+        max-height: 92dvh;
+        border-radius: 12px;
+      }
+
+      .detail-header {
+        padding: 10px 14px;
+      }
+
+      .detail-scroll {
+        padding: 20px 16px 24px;
       }
     }
   `;
@@ -455,6 +558,11 @@ export class KanbrawlApp extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     this.closeSSE();
+    this.unlockBodyScroll();
+  }
+
+  updated() {
+    this.syncDetailDialog();
   }
 
   private closeSSE() {
@@ -566,8 +674,8 @@ export class KanbrawlApp extends LitElement {
 
     this.eventSource.addEventListener('task_deleted', (e: MessageEvent) => {
       const data = JSON.parse(e.data);
-      if (this.selectedTask?.id === data.taskId) {
-        this.selectedTask = null;
+      if (this.selectedTaskId === data.taskId) {
+        this.selectedTaskId = undefined;
       }
 
       this.board = {
@@ -646,9 +754,9 @@ export class KanbrawlApp extends LitElement {
   private async handleDeleteTask(e: CustomEvent<{ id: string }>) {
     try {
       await deleteTask(e.detail.id);
-      // Close panel if the deleted task was being viewed
-      if (this.selectedTask?.id === e.detail.id) {
-        this.selectedTask = null;
+      // Close the dialog if the deleted task was being viewed
+      if (this.selectedTaskId === e.detail.id) {
+        this.selectedTaskId = undefined;
       }
     } catch (error) {
       this.error =
@@ -657,11 +765,77 @@ export class KanbrawlApp extends LitElement {
   }
 
   private handleViewTask(e: CustomEvent<{ task: Task }>) {
-    this.selectedTask = e.detail.task;
+    this.selectedTaskId = e.detail.task.id;
+  }
+
+  private get currentTask(): Task | undefined {
+    if (!this.selectedTaskId) return undefined;
+    return this.board.tasks.find((task) => task.id === this.selectedTaskId);
+  }
+
+  private get detailDialog(): HTMLDialogElement | undefined {
+    return (
+      this.renderRoot.querySelector<HTMLDialogElement>('dialog.task-detail') ??
+      undefined
+    );
+  }
+
+  private syncDetailDialog() {
+    const dialog = this.detailDialog;
+    if (!dialog) return;
+
+    if (this.currentTask) {
+      if (!dialog.open) {
+        this.lockBodyScroll();
+        dialog.showModal();
+        dialog.querySelector<HTMLElement>('.detail-close')?.focus();
+      }
+
+      return;
+    }
+
+    if (dialog.open) dialog.close();
+  }
+
+  private lockBodyScroll() {
+    if (this.previousBodyOverflow !== undefined) return;
+    this.previousBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+  }
+
+  private unlockBodyScroll() {
+    if (this.previousBodyOverflow === undefined) return;
+    document.body.style.overflow = this.previousBodyOverflow;
+    this.previousBodyOverflow = undefined;
+  }
+
+  private handleDetailClose() {
+    this.unlockBodyScroll();
+    this.selectedTaskId = undefined;
+  }
+
+  private handleDetailBackdrop(e: MouseEvent) {
+    const dialog = e.currentTarget as HTMLDialogElement;
+    if (e.target !== dialog) return;
+
+    // Padding clicks also target the dialog; only a point outside its box
+    // counts as a backdrop click.
+    const rect = dialog.getBoundingClientRect();
+    const inside =
+      e.clientX >= rect.left &&
+      e.clientX <= rect.right &&
+      e.clientY >= rect.top &&
+      e.clientY <= rect.bottom;
+    if (!inside) this.closeDetailPanel();
   }
 
   private closeDetailPanel() {
-    this.selectedTask = null;
+    const dialog = this.detailDialog;
+    if (dialog?.open) {
+      dialog.close();
+    } else {
+      this.handleDetailClose();
+    }
   }
 
   private formatTimestamp(iso: string): string {
@@ -671,53 +845,74 @@ export class KanbrawlApp extends LitElement {
     });
   }
 
-  private renderDetailPanel() {
-    const task = this.selectedTask;
-    if (!task) return null;
-
-    // Get the latest version from the board
-    const current = this.board.tasks.find((t) => t.id === task.id);
-    if (!current) return null;
-
+  private renderDetailDialog() {
+    const task = this.currentTask;
     return html`
-      <div class="detail-panel">
-        <div class="detail-header">
-          <span class="detail-header-title">Task Detail</span>
-          <button
-            class="detail-close"
-            title="Close"
-            @click=${this.closeDetailPanel}
-          >
-            ✕
-          </button>
-        </div>
-        <div class="detail-body">
-          <div class="detail-task-title">${current.title}</div>
-          <div class="detail-badges">
-            <span class="detail-badge priority-${current.priority}"
-              >${current.priority}</span
-            >
-            <span class="detail-badge column">${current.column}</span>
-            ${current.assignee
-              ? html`<span class="detail-badge assignee"
-                  >${current.assignee}</span
-                >`
-              : null}
-          </div>
-          ${current.description
-            ? html`
-                <div>
-                  <div class="detail-section-label">Description</div>
-                  <div class="detail-description">${current.description}</div>
+      <dialog
+        class="task-detail"
+        aria-labelledby="detail-title"
+        @click=${this.handleDetailBackdrop}
+        @close=${this.handleDetailClose}
+      >
+        ${task
+          ? html`
+              <div class="detail-header">
+                <span class="detail-header-title">Task Detail</span>
+                <button
+                  class="detail-close"
+                  title="Close"
+                  aria-label="Close task details"
+                  @click=${this.closeDetailPanel}
+                >
+                  ✕
+                </button>
+              </div>
+              <div class="detail-scroll">
+                <div class="detail-layout">
+                  <div class="detail-main">
+                    <div class="detail-badges">
+                      <span class="detail-badge priority-${task.priority}"
+                        >${task.priority}</span
+                      >
+                      <span class="detail-badge column">${task.column}</span>
+                    </div>
+                    <h2 class="detail-task-title" id="detail-title">
+                      ${task.title}
+                    </h2>
+                    <section aria-labelledby="detail-description-label">
+                      <h3
+                        class="detail-section-label"
+                        id="detail-description-label"
+                      >
+                        Description
+                      </h3>
+                      <div
+                        class=${task.description
+                          ? 'detail-description'
+                          : 'detail-description is-empty'}
+                      >
+                        ${task.description || 'No description.'}
+                      </div>
+                    </section>
+                  </div>
+                  <aside class="detail-sidebar" aria-label="Task metadata">
+                    <h3 class="detail-section-label">Details</h3>
+                    <dl class="detail-meta">
+                      <dt>Assignee</dt>
+                      <dd>${task.assignee || '—'}</dd>
+                      <dt>Column</dt>
+                      <dd>${task.column}</dd>
+                      <dt>Created</dt>
+                      <dd>${this.formatTimestamp(task.createdAt)}</dd>
+                      <dt>Updated</dt>
+                      <dd>${this.formatTimestamp(task.updatedAt)}</dd>
+                    </dl>
+                  </aside>
                 </div>
-              `
-            : null}
-          <div class="detail-timestamps">
-            <span>Created: ${this.formatTimestamp(current.createdAt)}</span>
-            <span>Updated: ${this.formatTimestamp(current.updatedAt)}</span>
-          </div>
-        </div>
-      </div>
+              </div>
+            `
+          : null}
+      </dialog>
     `;
   }
 
@@ -767,8 +962,8 @@ export class KanbrawlApp extends LitElement {
             @view-task=${this.handleViewTask}
           ></kanbrawl-board>
         </div>
-        ${this.selectedTask ? this.renderDetailPanel() : null}
       </main>
+      ${this.renderDetailDialog()}
     `;
   }
 }
