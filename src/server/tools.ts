@@ -168,7 +168,7 @@ export function registerTools(server: McpServer, store: BoardStore): void {
           .describe('Task title'),
         description: z
           .string()
-          .max(2000, 'Description must not exceed 2000 characters')
+          .max(4000, 'Description must not exceed 4000 characters')
           .optional()
           .describe('Task description'),
         column: z
@@ -275,7 +275,7 @@ export function registerTools(server: McpServer, store: BoardStore): void {
         title: z.string().min(1).max(200).optional().describe('New task title'),
         description: z
           .string()
-          .max(2000)
+          .max(4000)
           .optional()
           .describe('New task description'),
         priority: z
