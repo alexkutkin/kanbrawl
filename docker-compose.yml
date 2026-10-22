@@ -4,7 +4,7 @@ services:
     image: kanbrawl:local
     container_name: kanbrawl
     ports:
-      - "127.0.0.1:8431:8431"
+      - "8431:8431"
     environment:
       PORT: "8431"
     volumes:

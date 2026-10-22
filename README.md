@@ -59,7 +59,7 @@ To launch the web UI and HTTP MCP server:
 npx kanbrawl start
 ```
 
-Open [http://localhost:8431](http://localhost:8431) to view the board.
+Open [http://localhost:8431](http://localhost:8431) to view the board. The server listens on all interfaces and logs the network address, so other devices on your local network can open it too.
 
 ### Run with Docker
 
@@ -67,7 +67,10 @@ Open [http://localhost:8431](http://localhost:8431) to view the board.
 docker compose up --build -d
 ```
 
-The board is available at [http://localhost:8431](http://localhost:8431) and the MCP endpoint at `http://localhost:8431/mcp`. Board data is persisted in a host folder bind-mounted at `/data` (configured in `docker-compose.yml`), and the port is bound to loopback only.
+The board is available at [http://localhost:8431](http://localhost:8431) and the MCP endpoint at `http://localhost:8431/mcp`, or at `http://<your-ip>:8431` from other devices on your local network. Board data is persisted in a host folder bind-mounted at `/data` (configured in `docker-compose.yml`).
+
+> [!WARNING]
+> The board has no authentication, so anyone who can reach the port can view and edit tasks. If other devices cannot connect, allow inbound TCP port 8431 in the host firewall.
 
 ### Manual MCP Configuration
 
