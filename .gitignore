@@ -4,3 +4,4 @@ kanbrawl.json
 *.tsbuildinfo
 *.env*
 TODO
+.verify/
