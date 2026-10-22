@@ -1,5 +1,6 @@
 import process from 'node:process';
 import { createServer } from 'node:net';
+import { networkInterfaces } from 'node:os';
 import { existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -65,6 +66,19 @@ export type ServerOptions = {
   stdio?: boolean;
   port?: number;
 };
+
+function getLanUrls(port: number): string[] {
+  const urls: string[] = [];
+  for (const interfaces of Object.values(networkInterfaces())) {
+    for (const networkInterface of interfaces ?? []) {
+      if (networkInterface.family === 'IPv4' && !networkInterface.internal) {
+        urls.push(`http://${networkInterface.address}:${port}`);
+      }
+    }
+  }
+
+  return urls;
+}
 
 export async function startServer(
   options: ServerOptions = {},
@@ -144,6 +158,13 @@ export async function startServer(
     log(`🥊 Kanbrawl server running on http://localhost:${port}`);
     if (!options.stdio) {
       log(`   MCP endpoint: http://localhost:${port}/mcp`);
+    }
+
+    // Inside a container these interfaces are container-internal, not LAN addresses
+    if (!existsSync('/.dockerenv')) {
+      for (const url of getLanUrls(port)) {
+        log(`   Network: ${url}`);
+      }
     }
 
     log(`   MCP transport: ${options.stdio ? 'stdio' : 'HTTP'}`);
