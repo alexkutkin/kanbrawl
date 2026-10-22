@@ -544,7 +544,7 @@ export async function activate(
               return;
             }
 
-            column = picked || undefined;
+            column = picked;
           }
         }
 
@@ -569,10 +569,10 @@ export async function activate(
         try {
           await apiClient.createTask({
             title: title.trim(),
-            description: description || undefined,
+            description: description.length > 0 ? description : undefined,
             column,
             priority: priorityPick?.label ?? undefined,
-            assignee: assignee || undefined,
+            assignee: assignee.length > 0 ? assignee : undefined,
           });
         } catch (error) {
           void vscode.window.showErrorMessage(
