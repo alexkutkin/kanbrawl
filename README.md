@@ -61,6 +61,14 @@ npx kanbrawl start
 
 Open [http://localhost:8431](http://localhost:8431) to view the board.
 
+### Run with Docker
+
+```bash
+docker compose up --build -d
+```
+
+The board is available at [http://localhost:8431](http://localhost:8431) and the MCP endpoint at `http://localhost:8431/mcp`. Board data is persisted in a host folder bind-mounted at `/data` (configured in `docker-compose.yml`), and the port is bound to loopback only.
+
 ### Manual MCP Configuration
 
 If you prefer to configure your MCP client manually instead of using `kanbrawl init`:
