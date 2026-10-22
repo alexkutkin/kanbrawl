@@ -31,7 +31,7 @@
     "dist/"
   ],
   "scripts": {
-    "build:server": "tsc",
+    "build:server": "tsc -p tsconfig.build.json",
     "build:client": "vite build src/client",
     "build": "npm run build:server && npm run build:client",
     "build:ext": "cd src/extension && npm install && node esbuild.mjs --production",

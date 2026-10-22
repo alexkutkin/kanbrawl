@@ -39,6 +39,7 @@ async function callTool(
   const text = textContent[0]?.text ?? '';
   return {
     ...result,
+    isError: 'isError' in result ? result.isError : undefined,
     text,
     json: () => JSON.parse(text),
     structured: result.structuredContent as Record<string, unknown> | undefined,
