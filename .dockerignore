@@ -1,0 +1,11 @@
+.git
+.github
+.vscode
+.agents
+docs
+node_modules
+dist
+kanbrawl.json
+*.tsbuildinfo
+*.env*
+TODO

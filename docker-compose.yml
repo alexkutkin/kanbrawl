@@ -1,0 +1,14 @@
+services:
+  kanbrawl:
+    build: .
+    image: kanbrawl:local
+    container_name: kanbrawl
+    ports:
+      - "127.0.0.1:8431:8431"
+    environment:
+      PORT: "8431"
+    volumes:
+      - type: bind
+        source: "C:/DockerData/kanbrawl"
+        target: /data
+    restart: unless-stopped
