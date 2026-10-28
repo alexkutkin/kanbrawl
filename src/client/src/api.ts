@@ -1,4 +1,4 @@
-import type { Board, Column, Task } from './types.js';
+import type { Board, Column, Task } from '../../shared/board.js';
 
 export function eventsUrl(): string {
   return '/events';

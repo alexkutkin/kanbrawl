@@ -1,6 +1,6 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
-import type { Column, SortBy, SortOrder, Task } from '../types.js';
+import type { Column, SortBy, SortOrder, Task } from '../../../shared/board.js';
 
 // `crypto.randomUUID` is secure-context only, and the board is served over
 // plain HTTP on the LAN. The draft id just needs to be unique within the

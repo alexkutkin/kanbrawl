@@ -1,19 +1,35 @@
 import { LitElement, html, css, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import type { Board, Priority, Task, Column } from './types.js';
+import {
+  LIMITS,
+  type Board,
+  type Priority,
+  type Task,
+  type Column,
+} from '../../shared/board.js';
 import {
   fetchBoard,
   createTask,
   updateTask,
   deleteTask,
   updateColumns,
-  eventsUrl,
   ApiError,
 } from './api.js';
+import {
+  BoardSession,
+  type BoardSnapshots,
+  type ConnectionStatus,
+} from './board-session.js';
+import { EventSourceTransport } from './event-source-transport.js';
+import {
+  transition,
+  type TaskDialogAction,
+  type TaskDialogState,
+  type TaskFields,
+} from './task-dialog.js';
 import './components/column-settings.js';
 
 type Theme = 'light' | 'dark';
-type ConnectionState = 'connecting' | 'online' | 'offline';
 
 type ResultCallbacks = {
   resolve?: () => void;
@@ -36,23 +52,18 @@ type UpdateColumnsDetail = {
   moveTo?: string;
 } & ResultCallbacks;
 
-type TaskFields = {
-  title: string;
-  description: string;
-  priority: Priority;
-  assignee: string;
-};
-
-type DetailEdit = TaskFields;
-
-type CreateDraft = TaskFields & { column: string };
-
 type ErrorState = { message: string; retry?: () => void };
 
 const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 const OFFLINE_BANNER_AFTER_MS = 8000;
-const BASE_RECONNECT_DELAY = 1000;
-const MAX_RECONNECT_DELAY = 30_000;
+
+const apiCommands = {
+  fetchBoard,
+  createTask,
+  updateTask,
+  deleteTask,
+  updateColumns,
+};
 
 type MarkdownBlock =
   | { kind: 'paragraph'; text: string }
@@ -231,31 +242,83 @@ function renderMarkdown(source: string): TemplateResult[] {
 
 @customElement('kanbrawl-app')
 export class KanbrawlApp extends LitElement {
-  @state() private board: Board = { columns: [], tasks: [] };
-  @state() private connection: ConnectionState = 'connecting';
-  @state() private lastSyncAt: number | undefined;
+  @state() private session: BoardSnapshots = {
+    board: { columns: [], tasks: [] },
+    connection: 'connecting',
+  };
+
   @state() private clock = Date.now();
   @state() private error: ErrorState | undefined;
   @state() private theme: Theme = 'dark';
   @state() private notice: string | undefined;
-  @state() private selectedTaskId: string | undefined;
-  @state() private createDraft: CreateDraft | undefined;
-  @state() private detailEdit: DetailEdit | undefined;
-  @state() private detailPending = false;
-  @state() private detailError: string | undefined;
+  @state() private dialog: TaskDialogState = { mode: 'closed' };
   @state() private copiedId: string | undefined;
   @state() private pendingDelete: { id: string; title: string } | undefined;
   @state() private deletePending = false;
   @state() private deleteError: string | undefined;
 
-  private eventSource: EventSource | undefined;
-  private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
-  private reconnectDelay = BASE_RECONNECT_DELAY;
+  private readonly boardSession = new BoardSession(
+    new EventSourceTransport(),
+    apiCommands,
+    {
+      onError: (error) => {
+        this.handleSessionError(error);
+      },
+    },
+  );
+
+  private unsubscribe: (() => void) | undefined;
   private clockTimer: ReturnType<typeof setInterval> | undefined;
   private noticeTimer: ReturnType<typeof setTimeout> | undefined;
   private copiedTimer: ReturnType<typeof setTimeout> | undefined;
   private boardLoaded = false;
   private pushedTaskEntry = false;
+
+  private get board(): Board {
+    return this.session.board;
+  }
+
+  private get connection(): ConnectionStatus {
+    return this.session.connection;
+  }
+
+  private get lastSyncAt(): number | undefined {
+    return this.session.lastSyncAt;
+  }
+
+  private get selectedTaskId(): string | undefined {
+    const { dialog } = this;
+    if (dialog.mode === 'view') return dialog.taskId;
+    if (dialog.mode === 'edit') return dialog.base.id;
+    return undefined;
+  }
+
+  private get detailTask(): Task | undefined {
+    const id = this.selectedTaskId;
+    if (!id) return undefined;
+    return this.board.tasks.find((task) => task.id === id);
+  }
+
+  private get editing(): boolean {
+    return this.dialog.mode === 'edit';
+  }
+
+  private get detailPending(): boolean {
+    const { dialog } = this;
+    return (
+      (dialog.mode === 'edit' || dialog.mode === 'create') && dialog.pending
+    );
+  }
+
+  private get detailError(): string | undefined {
+    const { dialog } = this;
+    if (dialog.mode === 'edit' || dialog.mode === 'create') return dialog.error;
+    return undefined;
+  }
+
+  private dispatch(action: TaskDialogAction) {
+    this.dialog = transition(this.dialog, action);
+  }
 
   static styles = css`
     :host {
@@ -1203,19 +1266,26 @@ export class KanbrawlApp extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     this.initTheme();
-    this.selectedTaskId = this.taskIdFromHash();
+    const initialTaskId = this.taskIdFromHash();
+    if (initialTaskId)
+      this.dispatch({ type: 'openView', taskId: initialTaskId });
     globalThis.addEventListener('hashchange', this.handleHashChange);
     globalThis.addEventListener('popstate', this.handleHashChange);
     this.clockTimer = globalThis.setInterval(() => {
       this.clock = Date.now();
     }, 5000);
-    void this.loadBoard();
-    this.connectSSE();
+
+    this.unsubscribe = this.boardSession.subscribe((snapshot) => {
+      this.handleSnapshot(snapshot);
+    });
+    this.boardSession.start();
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
-    this.closeSSE();
+    this.unsubscribe?.();
+    this.unsubscribe = undefined;
+    this.boardSession.stop();
     globalThis.removeEventListener('hashchange', this.handleHashChange);
     globalThis.removeEventListener('popstate', this.handleHashChange);
     if (this.clockTimer) clearInterval(this.clockTimer);
@@ -1270,148 +1340,53 @@ export class KanbrawlApp extends LitElement {
     return this.message(error);
   }
 
-  private async loadBoard(): Promise<void> {
+  private async refreshBoard(): Promise<void> {
     try {
-      const board = await fetchBoard();
-      this.boardLoaded = true;
-      this.markSync();
-      this.setBoard(board);
+      await this.boardSession.refresh();
       this.clearError();
-      if (!localStorage.getItem('kanbrawl-theme') && board.theme) {
-        this.theme = board.theme;
-        this.applyTheme();
-      }
     } catch (error) {
-      this.setError(this.message(error), async () => this.loadBoard());
+      this.setError(this.message(error), async () => this.refreshBoard());
     }
   }
 
-  private setBoard(board: Board) {
-    this.board = board;
+  private handleSessionError(error: unknown) {
+    this.setError(this.message(error), async () => this.refreshBoard());
+  }
+
+  private handleSnapshot(snapshot: BoardSnapshots) {
+    this.session = snapshot;
+
+    if (snapshot.lastSyncAt !== undefined) {
+      this.boardLoaded = true;
+      this.clock = Date.now();
+    }
+
+    const { theme } = snapshot.board;
     if (
-      this.selectedTaskId &&
-      !board.tasks.some((task) => task.id === this.selectedTaskId)
+      !localStorage.getItem('kanbrawl-theme') &&
+      theme &&
+      this.theme !== theme
     ) {
-      this.selectedTaskId = undefined;
+      this.theme = theme;
+      this.applyTheme();
+    }
+
+    const openTaskId = this.selectedTaskId;
+    if (
+      this.boardLoaded &&
+      openTaskId &&
+      !snapshot.board.tasks.some((task) => task.id === openTaskId)
+    ) {
+      this.dispatch({ type: 'taskRemoved', taskId: openTaskId });
       this.syncHashAfterClose();
       this.notify('That task no longer exists. It may have been deleted.');
     }
   }
 
-  private upsertTask(task: Task) {
-    const exists = this.board.tasks.some((item) => item.id === task.id);
-    this.board = {
-      ...this.board,
-      tasks: exists
-        ? this.board.tasks.map((item) => (item.id === task.id ? task : item))
-        : [...this.board.tasks, task],
-    };
-  }
-
-  private removeTask(id: string) {
-    this.board = {
-      ...this.board,
-      tasks: this.board.tasks.filter((task) => task.id !== id),
-    };
-  }
-
-  private markSync() {
-    this.lastSyncAt = Date.now();
-    this.clock = Date.now();
-  }
-
-  private closeSSE() {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = undefined;
-    }
-
-    this.eventSource?.close();
-    this.eventSource = undefined;
-  }
-
-  private scheduleReconnect() {
-    if (this.reconnectTimer) return;
-
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = undefined;
-      this.connectSSE();
-    }, this.reconnectDelay);
-
-    this.reconnectDelay = Math.min(
-      this.reconnectDelay * 2,
-      MAX_RECONNECT_DELAY,
-    );
-  }
-
   private reconnectNow() {
-    this.reconnectDelay = BASE_RECONNECT_DELAY;
-    this.closeSSE();
-    this.connectSSE();
-    void this.loadBoard();
-  }
-
-  private connectSSE() {
-    this.closeSSE();
-    this.connection = 'connecting';
-
-    const source = new EventSource(eventsUrl());
-    this.eventSource = source;
-
-    source.addEventListener('open', () => {
-      if (this.eventSource !== source) return;
-      this.connection = 'online';
-      this.reconnectDelay = BASE_RECONNECT_DELAY;
-      this.markSync();
-      this.clearError();
-      // Refetch to catch anything missed while the stream was down.
-      void this.loadBoard();
-    });
-
-    source.addEventListener('error', () => {
-      if (this.eventSource !== source) return;
-      this.connection = 'offline';
-      source.close();
-      this.eventSource = undefined;
-      this.scheduleReconnect();
-    });
-
-    source.addEventListener('board_sync', (event: MessageEvent) => {
-      const data = JSON.parse(event.data) as { board: Board };
-      this.connection = 'online';
-      this.markSync();
-      this.setBoard(data.board);
-    });
-
-    source.addEventListener('task_created', (event: MessageEvent) => {
-      const data = JSON.parse(event.data) as { task: Task };
-      this.markSync();
-      this.upsertTask(data.task);
-    });
-
-    source.addEventListener('task_updated', (event: MessageEvent) => {
-      const data = JSON.parse(event.data) as { task: Task };
-      this.markSync();
-      this.upsertTask(data.task);
-    });
-
-    source.addEventListener('task_moved', (event: MessageEvent) => {
-      const data = JSON.parse(event.data) as { task: Task };
-      this.markSync();
-      this.upsertTask(data.task);
-    });
-
-    source.addEventListener('task_deleted', (event: MessageEvent) => {
-      const data = JSON.parse(event.data) as { taskId: string };
-      this.markSync();
-      this.removeTask(data.taskId);
-    });
-
-    source.addEventListener('columns_updated', () => {
-      // Column renames/removals can move tasks; reload the whole board.
-      this.markSync();
-      void this.loadBoard();
-    });
+    this.boardSession.stop();
+    this.boardSession.start();
+    void this.refreshBoard();
   }
 
   // --- Errors and notices ---
@@ -1465,19 +1440,16 @@ export class KanbrawlApp extends LitElement {
     const id = this.taskIdFromHash();
     if (!id) {
       this.pushedTaskEntry = false;
-      this.selectedTaskId = undefined;
+      this.dispatch({ type: 'close' });
       return;
     }
 
     if (id === this.selectedTaskId) return;
 
-    this.selectedTaskId = id;
-    this.createDraft = undefined;
-    this.detailEdit = undefined;
-    this.detailError = undefined;
+    this.dispatch({ type: 'openView', taskId: id });
 
     if (this.boardLoaded && !this.board.tasks.some((task) => task.id === id)) {
-      this.selectedTaskId = undefined;
+      this.dispatch({ type: 'close' });
       this.replaceHash();
       this.notify('That task no longer exists. It may have been deleted.');
     }
@@ -1508,10 +1480,7 @@ export class KanbrawlApp extends LitElement {
 
   private openTask(id: string) {
     if (this.selectedTaskId === id) return;
-    this.createDraft = undefined;
-    this.detailEdit = undefined;
-    this.detailError = undefined;
-    this.selectedTaskId = id;
+    this.dispatch({ type: 'openView', taskId: id });
     const hash = `#task/${id}`;
     if (globalThis.location.hash !== hash) {
       this.pushedTaskEntry = true;
@@ -1524,17 +1493,7 @@ export class KanbrawlApp extends LitElement {
   }
 
   private openCreate(column: string) {
-    this.selectedTaskId = undefined;
-    this.detailEdit = undefined;
-    this.detailError = undefined;
-    this.detailPending = false;
-    this.createDraft = {
-      column,
-      title: '',
-      description: '',
-      priority: 'P1',
-      assignee: '',
-    };
+    this.dispatch({ type: 'openCreate', column });
   }
 
   private handleCreateRequest(e: CustomEvent<{ column: string }>) {
@@ -1565,11 +1524,11 @@ export class KanbrawlApp extends LitElement {
   private syncDialogs() {
     const detail = this.detailDialog;
     if (detail) {
-      if (this.currentTask ?? this.createDraft) {
+      if (this.dialog.mode !== 'closed') {
         if (!detail.open) {
           detail.showModal();
           const initial =
-            (this.createDraft ?? this.detailEdit)
+            this.dialog.mode === 'create' || this.dialog.mode === 'edit'
               ? detail.querySelector<HTMLInputElement>(
                   '.detail-edit-form input',
                 )
@@ -1604,11 +1563,7 @@ export class KanbrawlApp extends LitElement {
   }
 
   private handleDetailClose() {
-    this.selectedTaskId = undefined;
-    this.createDraft = undefined;
-    this.detailEdit = undefined;
-    this.detailError = undefined;
-    this.detailPending = false;
+    this.dispatch({ type: 'close' });
     this.syncHashAfterClose();
   }
 
@@ -1625,11 +1580,6 @@ export class KanbrawlApp extends LitElement {
       e.clientY >= rect.top &&
       e.clientY <= rect.bottom;
     if (!inside) this.closeDetailPanel();
-  }
-
-  private get currentTask(): Task | undefined {
-    if (!this.selectedTaskId) return undefined;
-    return this.board.tasks.find((task) => task.id === this.selectedTaskId);
   }
 
   private taskIsStale(task: Task): boolean {
@@ -1651,42 +1601,37 @@ export class KanbrawlApp extends LitElement {
   // --- Task mutations ---
 
   private async saveCreate() {
-    const draft = this.createDraft;
-    if (!draft || this.detailPending) return;
+    const { dialog } = this;
+    if (dialog.mode !== 'create' || dialog.pending) return;
 
-    const title = draft.title.trim();
+    const title = dialog.fields.title.trim();
     if (!title) {
-      this.detailError = 'Title is required.';
+      this.dispatch({ type: 'fail', message: 'Title is required.' });
       return;
     }
 
-    this.detailPending = true;
-    this.detailError = undefined;
+    this.dispatch({ type: 'submit' });
     try {
-      const task = await createTask({
+      await this.boardSession.createTask({
         title,
-        description: draft.description,
-        column: draft.column,
-        priority: draft.priority,
-        assignee: draft.assignee.trim(),
+        description: dialog.fields.description,
+        column: dialog.column,
+        priority: dialog.fields.priority,
+        assignee: dialog.fields.assignee.trim(),
         actor: 'web',
       });
-      this.upsertTask(task);
-      this.createDraft = undefined;
-      this.detailPending = false;
+      this.dispatch({ type: 'succeed' });
       this.closeDetailPanel();
       this.clearError();
     } catch (error) {
-      this.detailPending = false;
-      this.detailError = this.message(error);
+      this.dispatch({ type: 'fail', message: this.message(error) });
     }
   }
 
   private async handleUpdateTask(e: CustomEvent<UpdateTaskDetail>) {
     const { id, resolve, reject, ...fields } = e.detail;
     try {
-      const task = await updateTask(id, { ...fields, actor: 'web' });
-      this.upsertTask(task);
+      await this.boardSession.updateTask(id, { ...fields, actor: 'web' });
       resolve?.();
       this.clearError();
     } catch (error) {
@@ -1694,8 +1639,7 @@ export class KanbrawlApp extends LitElement {
         reject(this.message(error));
       } else {
         const retry = async () => {
-          const task = await updateTask(id, { ...fields, actor: 'web' });
-          this.upsertTask(task);
+          await this.boardSession.updateTask(id, { ...fields, actor: 'web' });
         };
 
         this.setError(this.message(error), retry);
@@ -1727,8 +1671,7 @@ export class KanbrawlApp extends LitElement {
     this.deletePending = true;
     this.deleteError = undefined;
     try {
-      await deleteTask(target.id);
-      this.removeTask(target.id);
+      await this.boardSession.deleteTask(target.id);
       this.pendingDelete = undefined;
       this.deletePending = false;
       this.clearError();
@@ -1744,15 +1687,9 @@ export class KanbrawlApp extends LitElement {
   }
 
   private async startDetailEdit() {
-    const task = this.currentTask;
+    const task = this.detailTask;
     if (!task) return;
-    this.detailEdit = {
-      title: task.title,
-      description: task.description,
-      priority: task.priority,
-      assignee: task.assignee,
-    };
-    this.detailError = undefined;
+    this.dispatch({ type: 'startEdit', task });
     await this.updateComplete;
     this.renderRoot
       .querySelector<HTMLInputElement>('.detail-edit-form input')
@@ -1760,39 +1697,33 @@ export class KanbrawlApp extends LitElement {
   }
 
   private cancelDetailEdit() {
-    this.detailEdit = undefined;
-    this.detailError = undefined;
+    this.dispatch({ type: 'cancel' });
   }
 
   private async saveDetailEdit() {
-    const task = this.currentTask;
-    const edit = this.detailEdit;
-    if (!task || !edit || this.detailPending) return;
+    const { dialog } = this;
+    if (dialog.mode !== 'edit' || dialog.pending) return;
 
-    const title = edit.title.trim();
+    const title = dialog.fields.title.trim();
     if (!title) {
-      this.detailError = 'Title is required.';
+      this.dispatch({ type: 'fail', message: 'Title is required.' });
       return;
     }
 
-    this.detailPending = true;
-    this.detailError = undefined;
+    this.dispatch({ type: 'submit' });
     try {
-      const updated = await updateTask(task.id, {
+      await this.boardSession.updateTask(dialog.base.id, {
         title,
-        description: edit.description,
-        priority: edit.priority,
-        assignee: edit.assignee.trim(),
+        description: dialog.fields.description,
+        priority: dialog.fields.priority,
+        assignee: dialog.fields.assignee.trim(),
         actor: 'web',
-        expectedUpdatedAt: task.updatedAt,
+        expectedUpdatedAt: dialog.base.updatedAt,
       });
-      this.upsertTask(updated);
-      this.detailEdit = undefined;
-      this.detailPending = false;
+      this.dispatch({ type: 'succeed' });
       this.clearError();
     } catch (error) {
-      this.detailPending = false;
-      this.detailError = this.conflictMessage(error);
+      this.dispatch({ type: 'fail', message: this.conflictMessage(error) });
     }
   }
 
@@ -1801,26 +1732,21 @@ export class KanbrawlApp extends LitElement {
     column: string,
     select: HTMLSelectElement,
   ) {
-    if (column === task.column || this.detailPending) {
+    if (column === task.column) {
       select.value = task.column;
       return;
     }
 
-    this.detailPending = true;
-    this.detailError = undefined;
     try {
-      const updated = await updateTask(task.id, {
+      await this.boardSession.updateTask(task.id, {
         column,
         actor: 'web',
         expectedUpdatedAt: task.updatedAt,
       });
-      this.upsertTask(updated);
       this.clearError();
     } catch (error) {
       select.value = task.column;
-      this.detailError = this.conflictMessage(error);
-    } finally {
-      this.detailPending = false;
+      this.setError(this.conflictMessage(error));
     }
   }
 
@@ -1873,10 +1799,8 @@ export class KanbrawlApp extends LitElement {
   private async handleUpdateColumns(e: CustomEvent<UpdateColumnsDetail>) {
     const { columns, moveTo, resolve, reject } = e.detail;
     try {
-      const result = await updateColumns(columns, moveTo);
+      await this.boardSession.updateColumns(columns, moveTo);
       resolve?.();
-      this.board = { ...this.board, columns: result.columns };
-      await this.loadBoard();
       this.clearError();
     } catch (error) {
       reject?.(this.message(error));
@@ -1953,7 +1877,7 @@ export class KanbrawlApp extends LitElement {
         <input
           id="task-form-title"
           type="text"
-          maxlength="200"
+          maxlength=${LIMITS.title}
           placeholder="Task title"
           .value=${fields.title}
           ?disabled=${this.detailPending}
@@ -1964,7 +1888,7 @@ export class KanbrawlApp extends LitElement {
         <label for="task-form-description">Description</label>
         <textarea
           id="task-form-description"
-          maxlength="4000"
+          maxlength=${LIMITS.description}
           placeholder="Description (optional)"
           .value=${fields.description}
           ?disabled=${this.detailPending}
@@ -1997,7 +1921,7 @@ export class KanbrawlApp extends LitElement {
             <input
               id="task-form-assignee"
               type="text"
-              maxlength="100"
+              maxlength=${LIMITS.assignee}
               placeholder="Name (optional)"
               .value=${fields.assignee}
               ?disabled=${this.detailPending}
@@ -2033,16 +1957,15 @@ export class KanbrawlApp extends LitElement {
     `;
   }
 
-  private renderComposer(draft: CreateDraft) {
+  private renderComposer(draft: Extract<TaskDialogState, { mode: 'create' }>) {
     return html`
       <div class="detail-layout">
         <div class="detail-main">
-          ${this.renderTaskForm(draft, {
+          ${this.renderTaskForm(draft.fields, {
             submitLabel: 'Add task',
             pendingLabel: 'Adding…',
             onChange: (patch) => {
-              if (!this.createDraft) return;
-              this.createDraft = { ...this.createDraft, ...patch };
+              this.dispatch({ type: 'change', patch });
             },
             onSubmit: () => {
               void this.saveCreate();
@@ -2061,11 +1984,10 @@ export class KanbrawlApp extends LitElement {
               ?disabled=${this.detailPending}
               .value=${draft.column}
               @change=${(e: Event) => {
-                if (!this.createDraft) return;
-                this.createDraft = {
-                  ...this.createDraft,
-                  column: (e.target as HTMLSelectElement).value,
-                };
+                this.dispatch({
+                  type: 'change',
+                  patch: { column: (e.target as HTMLSelectElement).value },
+                });
               }}
             >
               ${this.board.columns.map(
@@ -2141,7 +2063,7 @@ export class KanbrawlApp extends LitElement {
         <label for="detail-move-select">Move to</label>
         <select
           id="detail-move-select"
-          ?disabled=${this.detailPending || this.detailEdit !== undefined}
+          ?disabled=${this.editing}
           .value=${task.column}
           @change=${(e: Event) => {
             const select = e.target as HTMLSelectElement;
@@ -2157,7 +2079,7 @@ export class KanbrawlApp extends LitElement {
       <div class="detail-actions">
         <button
           class="btn-primary"
-          ?disabled=${this.detailPending || this.detailEdit !== undefined}
+          ?disabled=${this.editing}
           @click=${this.startDetailEdit}
         >
           Edit
@@ -2172,19 +2094,18 @@ export class KanbrawlApp extends LitElement {
           Delete
         </button>
       </div>
-      ${this.detailError && !this.detailEdit
-        ? html`<div class="form-error" role="alert" style="margin-top: 10px">
-            ${this.detailError}
-          </div>`
-        : nothing}
     `;
   }
 
   private renderDetailDialog() {
-    const task = this.currentTask;
-    const draft = this.createDraft;
-    const edit = this.detailEdit;
-    const heading = draft ? 'New task' : edit ? 'Edit task' : 'Task detail';
+    const { dialog } = this;
+    const task = this.detailTask;
+    const heading =
+      dialog.mode === 'create'
+        ? 'New task'
+        : dialog.mode === 'edit'
+          ? 'Edit task'
+          : 'Task detail';
     return html`
       <dialog
         class="task-detail"
@@ -2195,7 +2116,7 @@ export class KanbrawlApp extends LitElement {
           if (this.detailPending) e.preventDefault();
         }}
       >
-        ${(draft ?? task)
+        ${dialog.mode === 'create' || task
           ? html`
               <div class="detail-header">
                 <span class="detail-header-title" id="detail-dialog-title"
@@ -2211,22 +2132,18 @@ export class KanbrawlApp extends LitElement {
                 </button>
               </div>
               <div class="detail-scroll">
-                ${draft
-                  ? this.renderComposer(draft)
+                ${dialog.mode === 'create'
+                  ? this.renderComposer(dialog)
                   : task
                     ? html`
                         <div class="detail-layout">
                           <div class="detail-main">
-                            ${edit
-                              ? this.renderTaskForm(edit, {
+                            ${dialog.mode === 'edit'
+                              ? this.renderTaskForm(dialog.fields, {
                                   submitLabel: 'Save',
                                   pendingLabel: 'Saving…',
                                   onChange: (patch) => {
-                                    if (!this.detailEdit) return;
-                                    this.detailEdit = {
-                                      ...this.detailEdit,
-                                      ...patch,
-                                    };
+                                    this.dispatch({ type: 'change', patch });
                                   },
                                   onSubmit: () => {
                                     void this.saveDetailEdit();

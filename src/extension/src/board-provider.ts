@@ -1,13 +1,15 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import {
-  type Task,
-  type Column,
-  type KanbrawlData,
+  applyBoardEvent,
+  compareTasks,
+  type Board,
   type BoardEvent,
+  type Column,
   type Priority,
-  type KanbrawlApiClient,
-} from './api.js';
+  type Task,
+} from '../../shared/board.js';
+import { type KanbrawlApiClient } from './api.js';
 
 // ── Priority icons ──────────────────────────────────────────────────
 
@@ -29,37 +31,8 @@ export type BoardItem =
 
 // ── Sort helpers ────────────────────────────────────────────────────
 
-const PRIORITY_ORDER: Record<Priority, number> = { P0: 0, P1: 1, P2: 2 };
-
 function sortTasks(tasks: Task[], column: Column): Task[] {
-  const sorted = [...tasks];
-  const dir = column.sortOrder === 'asc' ? 1 : -1;
-
-  sorted.sort((a, b) => {
-    switch (column.sortBy) {
-      case 'priority': {
-        return (PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]) * dir;
-      }
-
-      case 'created': {
-        return (
-          (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()) *
-          dir
-        );
-      }
-
-      case 'updated': {
-        return (
-          (new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime()) *
-          dir
-        );
-      }
-    }
-
-    return 0;
-  });
-
-  return sorted;
+  return [...tasks].sort((a, b) => compareTasks(column, a, b));
 }
 
 // ── Tree MIME type ──────────────────────────────────────────────────
@@ -85,7 +58,7 @@ export class BoardTreeProvider
   readonly dropMimeTypes: readonly string[] = [TREE_MIME];
 
   // State
-  private board: KanbrawlData = { columns: [], tasks: [] };
+  private board: Board = { columns: [], tasks: [] };
   private readonly priorityIcons: Record<Priority, vscode.Uri>;
   private api: KanbrawlApiClient | undefined;
 
@@ -114,49 +87,12 @@ export class BoardTreeProvider
   }
 
   handleEvent(event: BoardEvent): void {
-    switch (event.type) {
-      case 'board_sync': {
-        this.board = event.board;
-        break;
-      }
-
-      case 'task_created': {
-        this.board = {
-          ...this.board,
-          tasks: [...this.board.tasks, event.task],
-        };
-        break;
-      }
-
-      case 'task_updated':
-      case 'task_moved': {
-        this.board = {
-          ...this.board,
-          tasks: this.board.tasks.map((t) =>
-            t.id === event.task.id ? event.task : t,
-          ),
-        };
-        break;
-      }
-
-      case 'task_deleted': {
-        this.board = {
-          ...this.board,
-          tasks: this.board.tasks.filter((t) => t.id !== event.taskId),
-        };
-        break;
-      }
-
-      case 'columns_updated': {
-        this.board = {
-          ...this.board,
-          columns: event.columns,
-        };
-        break;
-      }
-    }
-
+    const { board, reload } = applyBoardEvent(this.board, event);
+    this.board = board;
     this._onDidChangeTreeData.fire();
+    if (reload) {
+      void this.loadBoard();
+    }
   }
 
   getColumnNames(): string[] {

@@ -1,6 +1,6 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
-import type { Task } from '../types.js';
+import type { Task } from '../../../shared/board.js';
 
 @customElement('kanbrawl-task')
 export class KanbrawlTask extends LitElement {

@@ -1,44 +1,5 @@
 import * as http from 'node:http';
-
-// ── Types (mirrors src/server/types.ts) ─────────────────────────────
-
-export type Priority = 'P0' | 'P1' | 'P2';
-export type SortBy = 'priority' | 'created' | 'updated';
-export type SortOrder = 'asc' | 'desc';
-
-export type Column = {
-  id: string;
-  name: string;
-  sortBy: SortBy;
-  sortOrder: SortOrder;
-};
-
-export type Task = {
-  id: string;
-  title: string;
-  description: string;
-  column: string;
-  priority: Priority;
-  assignee: string;
-  lastActor: string;
-  clientRequestId?: string;
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type KanbrawlData = {
-  columns: Column[];
-  tasks: Task[];
-  theme?: 'light' | 'dark';
-};
-
-export type BoardEvent =
-  | { type: 'task_created'; task: Task }
-  | { type: 'task_updated'; task: Task }
-  | { type: 'task_moved'; task: Task; fromColumn: string }
-  | { type: 'task_deleted'; taskId: string }
-  | { type: 'columns_updated'; columns: Column[] }
-  | { type: 'board_sync'; board: KanbrawlData };
+import type { Board, BoardEvent, Task } from '../../shared/board.js';
 
 // ── REST API client ─────────────────────────────────────────────────
 
@@ -71,13 +32,13 @@ export class KanbrawlApiClient {
     return 30_000;
   }
 
-  async getBoard(): Promise<KanbrawlData> {
+  async getBoard(): Promise<Board> {
     const response = await fetch(`${this.baseUrl}/api/board`);
     if (!response.ok) {
       throw new Error(`Failed to fetch board: ${response.statusText}`);
     }
 
-    return response.json() as Promise<KanbrawlData>;
+    return response.json() as Promise<Board>;
   }
 
   async createTask(fields: {

@@ -1,0 +1,144 @@
+import type { Priority, Task } from '../../shared/board.js';
+
+export type TaskFields = {
+  title: string;
+  description: string;
+  priority: Priority;
+  assignee: string;
+};
+
+export type TaskDialogState =
+  | { mode: 'closed' }
+  | { mode: 'view'; taskId: string }
+  | {
+      mode: 'edit';
+      base: Task;
+      fields: TaskFields;
+      pending: boolean;
+      error?: string;
+    }
+  | {
+      mode: 'create';
+      column: string;
+      fields: TaskFields;
+      pending: boolean;
+      error?: string;
+    };
+
+export type TaskDialogAction =
+  | { type: 'openView'; taskId: string }
+  | { type: 'openCreate'; column: string }
+  | { type: 'startEdit'; task: Task }
+  | { type: 'change'; patch: Partial<TaskFields> & { column?: string } }
+  | { type: 'submit' }
+  | { type: 'fail'; message: string }
+  | { type: 'succeed' }
+  | { type: 'cancel' }
+  | { type: 'close' }
+  | { type: 'taskRemoved'; taskId: string };
+
+function fieldsFromTask(task: Task): TaskFields {
+  return {
+    title: task.title,
+    description: task.description,
+    priority: task.priority,
+    assignee: task.assignee,
+  };
+}
+
+export function transition(
+  state: TaskDialogState,
+  action: TaskDialogAction,
+): TaskDialogState {
+  switch (action.type) {
+    case 'openView': {
+      return { mode: 'view', taskId: action.taskId };
+    }
+
+    case 'openCreate': {
+      return {
+        mode: 'create',
+        column: action.column,
+        fields: { title: '', description: '', priority: 'P1', assignee: '' },
+        pending: false,
+      };
+    }
+
+    case 'startEdit': {
+      if (state.mode !== 'view' && state.mode !== 'closed') return state;
+      return {
+        mode: 'edit',
+        base: action.task,
+        fields: fieldsFromTask(action.task),
+        pending: false,
+      };
+    }
+
+    case 'change': {
+      if (state.mode === 'edit') {
+        if (state.pending) return state;
+        const { column: _column, ...patch } = action.patch;
+        return { ...state, fields: { ...state.fields, ...patch } };
+      }
+
+      if (state.mode === 'create') {
+        if (state.pending) return state;
+        const { column, ...patch } = action.patch;
+        return {
+          ...state,
+          column: column ?? state.column,
+          fields: { ...state.fields, ...patch },
+        };
+      }
+
+      return state;
+    }
+
+    case 'submit': {
+      if (state.mode !== 'edit' && state.mode !== 'create') return state;
+      if (state.pending) return state;
+      return { ...state, pending: true, error: undefined };
+    }
+
+    case 'fail': {
+      if (state.mode !== 'edit' && state.mode !== 'create') return state;
+      return { ...state, pending: false, error: action.message };
+    }
+
+    case 'succeed': {
+      if (state.mode === 'edit') return { mode: 'view', taskId: state.base.id };
+      if (state.mode === 'create') return { mode: 'closed' };
+      return state;
+    }
+
+    case 'cancel': {
+      if (state.mode === 'edit') {
+        if (state.pending) return state;
+        return { mode: 'view', taskId: state.base.id };
+      }
+
+      if (state.mode === 'create') {
+        if (state.pending) return state;
+        return { mode: 'closed' };
+      }
+
+      return state;
+    }
+
+    case 'close': {
+      return { mode: 'closed' };
+    }
+
+    case 'taskRemoved': {
+      if (state.mode === 'view' && state.taskId === action.taskId) {
+        return { mode: 'closed' };
+      }
+
+      if (state.mode === 'edit' && state.base.id === action.taskId) {
+        return { mode: 'closed' };
+      }
+
+      return state;
+    }
+  }
+}

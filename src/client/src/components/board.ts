@@ -1,6 +1,6 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
-import type { Task, Column } from '../types.js';
+import type { Task, Column } from '../../../shared/board.js';
 
 const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 
