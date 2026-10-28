@@ -27,6 +27,6 @@ WORKDIR /data
 
 EXPOSE 8431
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:8431/api/board > /dev/null || exit 1
+  CMD wget -qO- http://127.0.0.1:8431/healthz > /dev/null || exit 1
 
 CMD ["node", "/app/bin/cli.js", "start", "--port", "8431"]

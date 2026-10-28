@@ -24,6 +24,18 @@ export function run(arguments_: string[]): void {
     .description('start the Kanbrawl server')
     .option('--stdio', 'use stdio transport for MCP (instead of HTTP server)')
     .option('-p, --port <number>', 'port to listen on (default: 8431)')
+    .option(
+      '-H, --host <address>',
+      'address to bind (default: 127.0.0.1, or 0.0.0.0 inside a container)',
+    )
+    .option(
+      '--token <token>',
+      'require this token for HTTP access (env: KB_TOKEN)',
+    )
+    .option(
+      '--allow-origin <origin...>',
+      'additional browser origins allowed to call the HTTP API',
+    )
     .action(startAction);
 
   program
