@@ -2,6 +2,7 @@ import { LitElement, html, css, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import {
   LIMITS,
+  type AttachmentMeta,
   type Board,
   type Priority,
   type Task,
@@ -13,21 +14,29 @@ import {
   updateTask,
   deleteTask,
   updateColumns,
+  addAttachment,
+  deleteAttachment,
+  attachmentUrl,
   ApiError,
 } from './api.js';
 import {
   BoardSession,
+  type BoardCommands,
   type BoardSnapshots,
   type ConnectionStatus,
 } from './board-session.js';
 import { EventSourceTransport } from './event-source-transport.js';
 import {
   transition,
+  type StagedImage,
   type TaskDialogAction,
   type TaskDialogState,
   type TaskFields,
 } from './task-dialog.js';
 import './components/column-settings.js';
+import './components/app-button.js';
+import './components/app-badge.js';
+import './components/app-banner.js';
 
 type Theme = 'light' | 'dark';
 
@@ -57,12 +66,22 @@ type ErrorState = { message: string; retry?: () => void };
 const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 const OFFLINE_BANNER_AFTER_MS = 8000;
 
-const apiCommands = {
+function makeRequestId(): string {
+  const { crypto } = globalThis;
+  if (typeof crypto?.randomUUID === 'function') return crypto.randomUUID();
+  // Crypto.randomUUID needs a secure context; the LAN board is plain HTTP.
+  return `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+const apiCommands: BoardCommands = {
   fetchBoard,
   createTask,
   updateTask,
   deleteTask,
   updateColumns,
+  addAttachment,
+  deleteAttachment: async (_taskId, attachmentId) =>
+    deleteAttachment(attachmentId),
 };
 
 type MarkdownBlock =
@@ -256,6 +275,8 @@ export class KanbrawlApp extends LitElement {
   @state() private pendingDelete: { id: string; title: string } | undefined;
   @state() private deletePending = false;
   @state() private deleteError: string | undefined;
+  @state() private viewer: AttachmentMeta | undefined;
+  @state() private imageBusy = false;
 
   private readonly boardSession = new BoardSession(
     new EventSourceTransport(),
@@ -273,6 +294,7 @@ export class KanbrawlApp extends LitElement {
   private copiedTimer: ReturnType<typeof setTimeout> | undefined;
   private boardLoaded = false;
   private pushedTaskEntry = false;
+  private createRequestId: string | undefined;
 
   private get board(): Board {
     return this.session.board;
@@ -523,79 +545,19 @@ export class KanbrawlApp extends LitElement {
       gap: 16px;
     }
 
-    .theme-toggle {
-      background: none;
-      border: 1px solid var(--border-input);
-      color: var(--text-secondary);
-      cursor: pointer;
-      padding: 0;
-      width: 32px;
-      height: 32px;
-      border-radius: 6px;
-      font-size: 16px;
-      line-height: 1;
-      transition: all 0.2s ease;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .theme-toggle:hover {
-      border-color: var(--accent);
-      color: var(--accent);
-      background: var(--accent-bg);
-    }
-
-    .stale-banner {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 8px 16px;
-      background: var(--stale-bg);
-      border-bottom: 1px solid var(--border-input);
-      color: var(--stale-text);
-      font-size: 12px;
+    .banner-action {
       flex-shrink: 0;
     }
 
-    .stale-banner span {
-      flex: 1;
-    }
-
-    .stale-banner button,
-    .error-bar button {
-      min-height: 28px;
-      padding: 4px 12px;
+    .banner-action::part(button) {
+      border-color: currentColor;
       border-radius: 5px;
-      border: 1px solid currentColor;
-      background: transparent;
       color: inherit;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-      flex-shrink: 0;
     }
 
-    .stale-banner button:hover,
-    .error-bar button:hover {
+    .banner-action::part(button):hover:enabled {
       background: color-mix(in srgb, currentColor 12%, transparent);
-    }
-
-    .error-bar {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      background: var(--error-bg);
-      border-bottom: 1px solid var(--error-border);
-      padding: 8px 16px;
-      font-size: 13px;
-      color: var(--error-text);
-      flex-shrink: 0;
-    }
-
-    .error-bar .error-message {
-      flex: 1;
-      min-width: 0;
+      color: inherit;
     }
 
     main {
@@ -629,18 +591,14 @@ export class KanbrawlApp extends LitElement {
       animation: noticeIn 0.18s ease-out;
     }
 
-    .notice button {
-      border: none;
-      background: none;
-      color: var(--text-muted);
-      cursor: pointer;
-      font-size: 14px;
-      line-height: 1;
+    .notice kanbrawl-button::part(button) {
       min-width: 24px;
       min-height: 24px;
+      font-size: 14px;
+      color: var(--text-muted);
     }
 
-    .notice button:hover {
+    .notice kanbrawl-button::part(button):hover {
       color: var(--text-primary);
     }
 
@@ -716,33 +674,6 @@ export class KanbrawlApp extends LitElement {
       color: var(--text-muted);
     }
 
-    .detail-close {
-      background: none;
-      border: 1px solid var(--border-input);
-      color: var(--text-secondary);
-      cursor: pointer;
-      width: 32px;
-      height: 32px;
-      border-radius: 6px;
-      font-size: 14px;
-      line-height: 1;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: all 0.15s ease;
-    }
-
-    .detail-close:hover {
-      border-color: var(--accent);
-      color: var(--accent);
-      background: var(--accent-bg);
-    }
-
-    .detail-close:focus-visible {
-      outline: 2px solid var(--accent);
-      outline-offset: 2px;
-    }
-
     .detail-scroll {
       flex: 1;
       min-height: 0;
@@ -785,42 +716,6 @@ export class KanbrawlApp extends LitElement {
       flex-wrap: wrap;
     }
 
-    .detail-badge,
-    .detail-stale {
-      font-family: 'Space Mono', monospace;
-      font-size: 11px;
-      font-weight: 700;
-      padding: 3px 10px;
-      border-radius: 4px;
-      letter-spacing: 0.5px;
-    }
-
-    .detail-badge.priority-P0 {
-      background: var(--priority-p0-bg);
-      color: var(--priority-p0-text);
-    }
-
-    .detail-badge.priority-P1 {
-      background: var(--priority-p1-bg);
-      color: var(--priority-p1-text);
-    }
-
-    .detail-badge.priority-P2 {
-      background: var(--priority-p2-bg);
-      color: var(--priority-p2-text);
-    }
-
-    .detail-badge.column {
-      background: var(--count-bg);
-      color: var(--text-secondary);
-    }
-
-    .detail-stale {
-      background: var(--stale-bg);
-      color: var(--stale-text);
-      text-transform: uppercase;
-    }
-
     .detail-task-title {
       font-size: clamp(21px, 1.6vw, 28px);
       font-weight: 700;
@@ -847,25 +742,6 @@ export class KanbrawlApp extends LitElement {
       border-radius: 5px;
       user-select: all;
       word-break: break-all;
-    }
-
-    .copy-btn {
-      min-height: 28px;
-      padding: 4px 10px;
-      border: 1px solid var(--border-input);
-      border-radius: 5px;
-      background: transparent;
-      color: var(--text-secondary);
-      font-size: 11px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.15s ease;
-    }
-
-    .copy-btn:hover {
-      border-color: var(--accent);
-      color: var(--accent);
-      background: var(--accent-bg);
     }
 
     .detail-section-label {
@@ -1029,52 +905,9 @@ export class KanbrawlApp extends LitElement {
       gap: 8px;
     }
 
-    .detail-actions button,
-    .detail-edit-actions button {
+    .detail-actions kanbrawl-button,
+    .detail-edit-actions kanbrawl-button {
       flex: 1;
-      min-height: 34px;
-      padding: 6px 10px;
-      border-radius: 6px;
-      border: none;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.15s ease;
-    }
-
-    .detail-actions button:disabled,
-    .detail-edit-actions button:disabled {
-      cursor: not-allowed;
-      opacity: 0.6;
-    }
-
-    .btn-primary {
-      background: var(--accent);
-      color: var(--on-accent);
-    }
-
-    .btn-primary:hover:not(:disabled) {
-      background: var(--accent-hover);
-    }
-
-    .btn-secondary {
-      background: var(--btn-secondary-bg);
-      color: var(--text-secondary);
-    }
-
-    .btn-secondary:hover:not(:disabled) {
-      background: var(--btn-secondary-hover);
-    }
-
-    .btn-danger-outline {
-      background: transparent;
-      border: 1px solid var(--border-input) !important;
-      color: var(--delete-text);
-    }
-
-    .btn-danger-outline:hover:not(:disabled) {
-      border-color: var(--delete-text) !important;
-      background: var(--delete-bg);
     }
 
     .detail-edit-form {
@@ -1142,30 +975,6 @@ export class KanbrawlApp extends LitElement {
       display: flex;
       gap: 8px;
       justify-content: flex-end;
-    }
-
-    .confirm-actions button {
-      min-height: 34px;
-      padding: 6px 14px;
-      border-radius: 6px;
-      border: none;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-    }
-
-    .btn-danger {
-      background: var(--danger-solid-bg);
-      color: var(--danger-solid-text);
-    }
-
-    .btn-danger:hover:not(:disabled) {
-      filter: brightness(1.08);
-    }
-
-    .btn-danger:disabled {
-      cursor: not-allowed;
-      opacity: 0.6;
     }
 
     @media (max-width: 900px) {
@@ -1248,11 +1057,140 @@ export class KanbrawlApp extends LitElement {
       }
     }
 
+    /* ── Attachments ── */
+    .attachments {
+      margin-top: 20px;
+    }
+
+    .attachment-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .attachment-thumb {
+      position: relative;
+      display: inline-flex;
+      width: 84px;
+      height: 84px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--bg-input);
+    }
+
+    .attachment-thumb img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .attachment-open {
+      width: 100%;
+      height: 100%;
+    }
+
+    .attachment-open::part(button) {
+      width: 100%;
+      height: 100%;
+      cursor: zoom-in;
+    }
+
+    .attachment-open::part(button):focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }
+
+    .attachment-remove {
+      position: absolute;
+      top: 4px;
+      right: 4px;
+    }
+
+    .attachment-remove::part(button) {
+      min-width: 22px;
+      min-height: 22px;
+      border: none;
+      border-radius: 5px;
+      background: rgba(0, 0, 0, 0.6);
+      color: #ffffff;
+      font-size: 11px;
+    }
+
+    .attachment-remove::part(button):hover:not(:disabled) {
+      background: var(--danger-solid-bg);
+      box-shadow: none;
+      filter: none;
+    }
+
+    .attachments-empty {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .attachments-drop {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border: 1px dashed var(--border-default);
+      border-radius: 8px;
+      background: var(--bg-input);
+    }
+
+    .attachments-hint {
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+
+    .attachment-add-icon {
+      flex-shrink: 0;
+    }
+
+    .image-viewer {
+      border: none;
+      border-radius: 12px;
+      padding: 16px;
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      max-width: min(92vw, 1100px);
+      max-height: 90vh;
+    }
+
+    .image-viewer::backdrop {
+      background: rgba(0, 0, 0, 0.75);
+    }
+
+    .image-viewer figure {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin: 0;
+    }
+
+    .image-viewer img {
+      display: block;
+      max-width: min(88vw, 1060px);
+      max-height: 76vh;
+      object-fit: contain;
+      border-radius: 8px;
+    }
+
+    .image-viewer figcaption {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      font-family: 'Space Mono', monospace;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
     @media (prefers-reduced-motion: reduce) {
       :host,
-      .status-dot,
-      .theme-toggle,
-      .copy-btn {
+      .status-dot {
         transition: none;
       }
 
@@ -1493,6 +1431,7 @@ export class KanbrawlApp extends LitElement {
   }
 
   private openCreate(column: string) {
+    this.createRequestId = undefined;
     this.dispatch({ type: 'openCreate', column });
   }
 
@@ -1510,6 +1449,13 @@ export class KanbrawlApp extends LitElement {
   private get detailDialog(): HTMLDialogElement | undefined {
     return (
       this.renderRoot.querySelector<HTMLDialogElement>('dialog.task-detail') ??
+      undefined
+    );
+  }
+
+  private get viewerDialog(): HTMLDialogElement | undefined {
+    return (
+      this.renderRoot.querySelector<HTMLDialogElement>('dialog.image-viewer') ??
       undefined
     );
   }
@@ -1540,6 +1486,15 @@ export class KanbrawlApp extends LitElement {
       }
     }
 
+    const viewer = this.viewerDialog;
+    if (viewer) {
+      if (this.viewer) {
+        if (!viewer.open) viewer.showModal();
+      } else if (viewer.open) {
+        viewer.close();
+      }
+    }
+
     const confirm = this.confirmDialog;
     if (confirm) {
       if (this.pendingDelete) {
@@ -1563,6 +1518,7 @@ export class KanbrawlApp extends LitElement {
   }
 
   private handleDetailClose() {
+    this.clearStagedImages();
     this.dispatch({ type: 'close' });
     this.syncHashAfterClose();
   }
@@ -1598,6 +1554,12 @@ export class KanbrawlApp extends LitElement {
     });
   }
 
+  private formatBytes(size: number): string {
+    if (size < 1024) return `${size} B`;
+    if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+    return `${(size / 1024 / 1024).toFixed(1)} MB`;
+  }
+
   // --- Task mutations ---
 
   private async saveCreate() {
@@ -1610,19 +1572,27 @@ export class KanbrawlApp extends LitElement {
       return;
     }
 
+    this.createRequestId ??= makeRequestId();
     this.dispatch({ type: 'submit' });
     try {
-      await this.boardSession.createTask({
+      const task = await this.boardSession.createTask({
         title,
         description: dialog.fields.description,
         column: dialog.column,
         priority: dialog.fields.priority,
         assignee: dialog.fields.assignee.trim(),
         actor: 'web',
+        clientRequestId: this.createRequestId,
       });
+      const { images } = dialog;
+      this.clearStagedImages();
       this.dispatch({ type: 'succeed' });
       this.closeDetailPanel();
       this.clearError();
+      await this.uploadImages(
+        task,
+        images.map((image) => ({ name: image.name, body: image.body })),
+      );
     } catch (error) {
       this.dispatch({ type: 'fail', message: this.message(error) });
     }
@@ -1725,6 +1695,134 @@ export class KanbrawlApp extends LitElement {
     } catch (error) {
       this.dispatch({ type: 'fail', message: this.conflictMessage(error) });
     }
+  }
+
+  // --- Task images ---
+
+  private get stagedImages(): StagedImage[] {
+    return this.dialog.mode === 'create' ? this.dialog.images : [];
+  }
+
+  private clearStagedImages() {
+    for (const image of this.stagedImages) {
+      URL.revokeObjectURL(image.previewUrl);
+    }
+
+    this.createRequestId = undefined;
+  }
+
+  private stageFiles(files: Iterable<File>) {
+    const images: StagedImage[] = [];
+    for (const file of files) {
+      if (file.type && !file.type.startsWith('image/')) continue;
+      images.push({
+        name: file.name || 'image',
+        size: file.size,
+        previewUrl: URL.createObjectURL(file),
+        body: file,
+      });
+    }
+
+    if (images.length > 0) {
+      this.dispatch({ type: 'stage', images });
+    }
+  }
+
+  private unstageImage(index: number) {
+    const image = this.stagedImages[index];
+    if (image) URL.revokeObjectURL(image.previewUrl);
+    this.dispatch({ type: 'unstage', index });
+  }
+
+  private handleImageFiles(files: Iterable<File>) {
+    const list = [...files];
+    if (this.dialog.mode === 'create') {
+      this.stageFiles(list);
+      return;
+    }
+
+    const task = this.detailTask;
+    if (task) {
+      void this.uploadImages(
+        task,
+        list.map((file) => ({ name: file.name, body: file })),
+      );
+    }
+  }
+
+  private async uploadImages(
+    task: Task,
+    images: Array<{ name?: string; body: Blob | Uint8Array }>,
+  ) {
+    if (images.length === 0) return;
+    this.imageBusy = true;
+    try {
+      for (const image of images) {
+        // Uploads run one at a time so a failure stops the batch predictably.
+        // eslint-disable-next-line no-await-in-loop
+        await this.boardSession.addAttachment(task.id, {
+          name: image.name,
+          body: image.body,
+        });
+      }
+    } catch (error) {
+      this.setError(this.message(error));
+    } finally {
+      this.imageBusy = false;
+    }
+  }
+
+  private async removeAttachment(task: Task, meta: AttachmentMeta) {
+    this.imageBusy = true;
+    try {
+      await this.boardSession.deleteAttachment(task.id, meta.id);
+    } catch (error) {
+      this.setError(this.message(error));
+    } finally {
+      this.imageBusy = false;
+    }
+  }
+
+  private handleAttachmentInput(e: Event) {
+    const input = e.target as HTMLInputElement;
+    // The FileList is a live view: copy before resetting the input.
+    const files = [...(input.files ?? [])];
+    input.value = '';
+    if (files.length > 0) this.handleImageFiles(files);
+  }
+
+  private handleAttachmentDrop(e: DragEvent) {
+    e.preventDefault();
+    if (e.dataTransfer?.files?.length) {
+      this.handleImageFiles(e.dataTransfer.files);
+    }
+  }
+
+  private handleDetailPaste(e: ClipboardEvent) {
+    const files = e.clipboardData?.files;
+    if (!files?.length) return;
+    e.preventDefault();
+    this.handleImageFiles(files);
+  }
+
+  private openAttachmentPicker() {
+    this.renderRoot
+      .querySelector<HTMLInputElement>('dialog.task-detail .attachment-input')
+      ?.click();
+  }
+
+  private openViewer(meta: AttachmentMeta) {
+    this.viewer = meta;
+  }
+
+  private closeViewer() {
+    this.viewer = undefined;
+  }
+
+  private handleViewerBackdrop(e: MouseEvent) {
+    const dialog = e.currentTarget as HTMLDialogElement;
+    if (e.target !== dialog) return;
+    this.closeViewer();
   }
 
   private async moveTaskFromDetail(
@@ -1937,21 +2035,23 @@ export class KanbrawlApp extends LitElement {
           ? html`<div class="form-error" role="alert">${this.detailError}</div>`
           : nothing}
         <div class="detail-edit-actions">
-          <button
+          <kanbrawl-button
             type="submit"
             class="btn-primary"
+            variant="primary"
             ?disabled=${this.detailPending || !fields.title.trim()}
           >
             ${this.detailPending ? options.pendingLabel : options.submitLabel}
-          </button>
-          <button
+          </kanbrawl-button>
+          <kanbrawl-button
             type="button"
             class="btn-secondary"
+            variant="secondary"
             ?disabled=${this.detailPending}
             @click=${options.onCancel}
           >
             Cancel
-          </button>
+          </kanbrawl-button>
         </div>
       </form>
     `;
@@ -1974,6 +2074,7 @@ export class KanbrawlApp extends LitElement {
               this.closeDetailPanel();
             },
           })}
+          ${this.renderAttachments()}
         </div>
         <aside class="detail-sidebar" aria-label="New task placement">
           <h3 class="detail-section-label">Details</h3>
@@ -2004,30 +2105,37 @@ export class KanbrawlApp extends LitElement {
   private renderDetailContent(task: Task) {
     return html`
       <div class="detail-badges">
-        <span class="detail-badge priority-${task.priority}"
-          >${task.priority}</span
+        <kanbrawl-badge
+          class="detail-badge priority-${task.priority}"
+          tone=${task.priority}
+          >${task.priority}</kanbrawl-badge
         >
-        <span class="detail-badge column">${task.column}</span>
+        <kanbrawl-badge class="detail-badge column" tone="neutral"
+          >${task.column}</kanbrawl-badge
+        >
         ${this.taskIsStale(task)
-          ? html`<span
+          ? html`<kanbrawl-badge
               class="detail-stale"
+              tone="stale"
               title="Last updated ${this.formatTimestamp(task.updatedAt)}"
-              >stale</span
+              >stale</kanbrawl-badge
             >`
           : nothing}
       </div>
       <h2 class="detail-task-title" id="detail-title">${task.title}</h2>
       <div class="detail-id-row">
         <code class="detail-id" title="Task ID">${task.id}</code>
-        <button
+        <kanbrawl-button
           class="copy-btn"
+          variant="outline"
+          size="sm"
           aria-label="Copy task ID"
           @click=${() => {
             void this.copyTaskId(task.id);
           }}
         >
           ${this.copiedId === task.id ? 'Copied' : 'Copy ID'}
-        </button>
+        </kanbrawl-button>
       </div>
       <section aria-labelledby="detail-description-label">
         <h3 class="detail-section-label" id="detail-description-label">
@@ -2077,22 +2185,24 @@ export class KanbrawlApp extends LitElement {
         </select>
       </div>
       <div class="detail-actions">
-        <button
+        <kanbrawl-button
           class="btn-primary"
+          variant="primary"
           ?disabled=${this.editing}
           @click=${this.startDetailEdit}
         >
           Edit
-        </button>
-        <button
+        </kanbrawl-button>
+        <kanbrawl-button
           class="btn-danger-outline"
+          variant="danger-outline"
           ?disabled=${this.detailPending}
           @click=${() => {
             this.requestDelete(task);
           }}
         >
           Delete
-        </button>
+        </kanbrawl-button>
       </div>
     `;
   }
@@ -2112,6 +2222,7 @@ export class KanbrawlApp extends LitElement {
         aria-labelledby="detail-dialog-title"
         @click=${this.handleDetailBackdrop}
         @close=${this.handleDetailClose}
+        @paste=${this.handleDetailPaste}
         @cancel=${(e: Event) => {
           if (this.detailPending) e.preventDefault();
         }}
@@ -2122,14 +2233,16 @@ export class KanbrawlApp extends LitElement {
                 <span class="detail-header-title" id="detail-dialog-title"
                   >${heading}</span
                 >
-                <button
+                <kanbrawl-button
                   class="detail-close"
+                  variant="outline"
+                  icon
                   title="Close"
                   aria-label="Close task details"
                   @click=${this.closeDetailPanel}
                 >
                   ✕
-                </button>
+                </kanbrawl-button>
               </div>
               <div class="detail-scroll">
                 ${dialog.mode === 'create'
@@ -2151,6 +2264,7 @@ export class KanbrawlApp extends LitElement {
                                   onCancel: this.cancelDetailEdit,
                                 })
                               : this.renderDetailContent(task)}
+                            ${this.renderAttachments()}
                           </div>
                           <aside
                             class="detail-sidebar"
@@ -2162,6 +2276,169 @@ export class KanbrawlApp extends LitElement {
                       `
                     : nothing}
               </div>
+            `
+          : nothing}
+      </dialog>
+    `;
+  }
+
+  private renderAttachments() {
+    return html`
+      <section class="attachments" aria-label="Images">
+        <h3 class="detail-section-label">Images</h3>
+        ${this.dialog.mode === 'create'
+          ? this.renderStagedThumbs()
+          : this.renderTaskThumbs(this.detailTask)}
+        <div
+          class="attachments-drop"
+          @dragover=${(e: DragEvent) => {
+            e.preventDefault();
+            if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+          }}
+          @drop=${this.handleAttachmentDrop}
+        >
+          <input
+            class="attachment-input"
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            multiple
+            hidden
+            @change=${this.handleAttachmentInput}
+          />
+          <kanbrawl-button
+            class="attachment-add"
+            variant="outline"
+            size="sm"
+            ?disabled=${this.imageBusy || this.detailPending}
+            @click=${this.openAttachmentPicker}
+          >
+            <svg
+              class="attachment-add-icon"
+              viewBox="0 0 12 12"
+              width="11"
+              height="11"
+              aria-hidden="true"
+            >
+              <path
+                d="M6 1.5v9M1.5 6h9"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+              />
+            </svg>
+            Add image
+          </kanbrawl-button>
+          <span class="attachments-hint">
+            Drop, paste or pick — PNG, JPEG, GIF or WebP, up to
+            ${LIMITS.attachmentsPerTask} images per task
+          </span>
+        </div>
+      </section>
+    `;
+  }
+
+  private renderStagedThumbs() {
+    return html`
+      <div class="attachment-grid">
+        ${this.stagedImages.map(
+          (image, index) => html`
+            <span class="attachment-thumb">
+              <img
+                src=${image.previewUrl}
+                alt=${image.name}
+                title=${image.name}
+              />
+              <kanbrawl-button
+                type="button"
+                class="attachment-remove"
+                variant="danger"
+                icon
+                size="sm"
+                title="Remove ${image.name}"
+                aria-label="Remove ${image.name}"
+                ?disabled=${this.detailPending}
+                @click=${() => {
+                  this.unstageImage(index);
+                }}
+              >
+                ✕
+              </kanbrawl-button>
+            </span>
+          `,
+        )}
+      </div>
+    `;
+  }
+
+  private renderTaskThumbs(task?: Task) {
+    const attachments = task?.attachments ?? [];
+    return html`
+      <div class="attachment-grid">
+        ${attachments.map(
+          (meta) => html`
+            <span class="attachment-thumb">
+              <kanbrawl-button
+                type="button"
+                class="attachment-open"
+                variant="plain"
+                block
+                title=${meta.filename}
+                @click=${() => {
+                  this.openViewer(meta);
+                }}
+              >
+                <img
+                  src=${attachmentUrl(meta.id)}
+                  alt=${meta.filename}
+                  loading="lazy"
+                />
+              </kanbrawl-button>
+              <kanbrawl-button
+                type="button"
+                class="attachment-remove"
+                variant="danger"
+                icon
+                size="sm"
+                title="Delete ${meta.filename}"
+                aria-label="Delete ${meta.filename}"
+                ?disabled=${this.imageBusy}
+                @click=${() => {
+                  if (task) void this.removeAttachment(task, meta);
+                }}
+              >
+                ✕
+              </kanbrawl-button>
+            </span>
+          `,
+        )}
+        ${attachments.length === 0
+          ? html`<span class="attachments-empty">No images yet.</span>`
+          : nothing}
+      </div>
+    `;
+  }
+
+  private renderViewer() {
+    const meta = this.viewer;
+    return html`
+      <dialog
+        class="image-viewer"
+        aria-label="Image viewer"
+        @click=${this.handleViewerBackdrop}
+        @close=${this.closeViewer}
+      >
+        ${meta
+          ? html`
+              <figure>
+                <img src=${attachmentUrl(meta.id)} alt=${meta.filename} />
+                <figcaption>
+                  <span>${meta.filename}</span>
+                  <span class="viewer-size"
+                    >${this.formatBytes(meta.size)}</span
+                  >
+                </figcaption>
+              </figure>
             `
           : nothing}
       </dialog>
@@ -2200,22 +2477,24 @@ export class KanbrawlApp extends LitElement {
                   </div>`
                 : nothing}
               <div class="confirm-actions">
-                <button
+                <kanbrawl-button
                   class="btn-secondary btn-cancel-confirm"
+                  variant="secondary"
                   ?disabled=${this.deletePending}
                   @click=${this.cancelDelete}
                 >
                   Cancel
-                </button>
-                <button
+                </kanbrawl-button>
+                <kanbrawl-button
                   class="btn-danger"
+                  variant="danger"
                   ?disabled=${this.deletePending}
                   @click=${() => {
                     void this.confirmDelete();
                   }}
                 >
                   ${this.deletePending ? 'Deleting…' : 'Delete'}
-                </button>
+                </kanbrawl-button>
               </div>
             `
           : nothing}
@@ -2237,30 +2516,60 @@ export class KanbrawlApp extends LitElement {
             .tasks=${this.board.tasks}
             @update-columns=${this.handleUpdateColumns}
           ></kanbrawl-column-settings>
-          <button
+          <kanbrawl-button
             class="theme-toggle"
+            variant="outline"
+            icon
             title="Toggle theme"
             aria-label="Toggle color theme"
             @click=${this.toggleTheme}
           >
             ${this.theme === 'dark' ? '☀️' : '🌙'}
-          </button>
+          </kanbrawl-button>
         </div>
       </header>
       ${this.showStaleBanner
-        ? html`<div class="stale-banner" role="status">
+        ? html`<kanbrawl-banner
+            class="stale-banner"
+            tone="warning"
+            role="status"
+          >
             <span>${this.staleBannerText()}</span>
-            <button @click=${this.reconnectNow}>Retry</button>
-          </div>`
+            <kanbrawl-button
+              slot="actions"
+              class="banner-action"
+              variant="ghost"
+              size="sm"
+              @click=${this.reconnectNow}
+            >
+              Retry
+            </kanbrawl-button>
+          </kanbrawl-banner>`
         : nothing}
       ${this.error
-        ? html`<div class="error-bar" role="alert">
+        ? html`<kanbrawl-banner class="error-bar" tone="error" role="alert">
             <span class="error-message">${this.error.message}</span>
             ${this.error.retry
-              ? html`<button @click=${this.error.retry}>Retry</button>`
+              ? html`<kanbrawl-button
+                  slot="actions"
+                  class="banner-action"
+                  variant="ghost"
+                  size="sm"
+                  @click=${this.error.retry}
+                >
+                  Retry
+                </kanbrawl-button>`
               : nothing}
-            <button @click=${this.clearError}>Dismiss</button>
-          </div>`
+            <kanbrawl-button
+              slot="actions"
+              class="banner-action"
+              variant="ghost"
+              size="sm"
+              @click=${this.clearError}
+            >
+              Dismiss
+            </kanbrawl-button>
+          </kanbrawl-banner>`
         : nothing}
       <main>
         <div class="board-area">
@@ -2278,17 +2587,22 @@ export class KanbrawlApp extends LitElement {
       ${this.notice
         ? html`<div class="notice" role="status">
             <span>${this.notice}</span>
-            <button
+            <kanbrawl-button
+              class="banner-action"
+              variant="ghost"
+              size="sm"
+              icon
               aria-label="Dismiss notification"
               @click=${() => {
                 this.notice = undefined;
               }}
             >
               ✕
-            </button>
+            </kanbrawl-button>
           </div>`
         : nothing}
       ${this.renderDetailDialog()} ${this.renderConfirmDialog()}
+      ${this.renderViewer()}
     `;
   }
 }

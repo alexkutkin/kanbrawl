@@ -1,7 +1,16 @@
-import type { Board, Column, Task } from '../../shared/board.js';
+import type {
+  AttachmentMeta,
+  Board,
+  Column,
+  Task,
+} from '../../shared/board.js';
 
 export function eventsUrl(): string {
   return '/events';
+}
+
+export function attachmentUrl(id: string): string {
+  return `/api/attachments/${encodeURIComponent(id)}`;
 }
 
 function headers(json: boolean): Record<string, string> {
@@ -112,5 +121,32 @@ export async function updateColumns(
     method: 'PUT',
     headers: headers(true),
     body: JSON.stringify({ columns, moveTo }),
+  });
+}
+
+export type AttachmentInput = {
+  name?: string;
+  body: Blob | Uint8Array;
+};
+
+export async function addAttachment(
+  taskId: string,
+  image: AttachmentInput,
+): Promise<AttachmentMeta> {
+  const query = image.name ? `?filename=${encodeURIComponent(image.name)}` : '';
+  return request<AttachmentMeta>(
+    `/api/tasks/${encodeURIComponent(taskId)}/attachments${query}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: image.body as BodyInit,
+    },
+  );
+}
+
+export async function deleteAttachment(id: string): Promise<void> {
+  await request<void>(`/api/attachments/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: headers(false),
   });
 }

@@ -1,6 +1,9 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import type { Task } from '../../../shared/board.js';
+import { attachmentUrl } from '../api.js';
+import './app-button.js';
+import './app-badge.js';
 
 @customElement('kanbrawl-task')
 export class KanbrawlTask extends LitElement {
@@ -45,19 +48,7 @@ export class KanbrawlTask extends LitElement {
       background: var(--bg-elevated-hover);
     }
 
-    .task-open {
-      display: block;
-      width: 100%;
-      padding: 0;
-      border: none;
-      background: none;
-      color: inherit;
-      font: inherit;
-      text-align: left;
-      cursor: pointer;
-    }
-
-    .task-open:focus-visible {
+    .task-open::part(button):focus-visible {
       outline: 2px solid var(--accent);
       outline-offset: 4px;
       border-radius: 4px;
@@ -71,43 +62,13 @@ export class KanbrawlTask extends LitElement {
     }
 
     .priority-badge {
-      font-family: 'Space Mono', monospace;
-      font-size: 11px;
-      font-weight: 700;
-      padding: 2px 6px;
-      border-radius: 4px;
-      letter-spacing: 0.5px;
       flex-shrink: 0;
       margin-top: 1px;
-    }
-
-    .priority-P0 {
-      background: var(--priority-p0-bg, rgba(239, 68, 68, 0.15));
-      color: var(--priority-p0-text, #ff8585);
-    }
-
-    .priority-P1 {
-      background: var(--priority-p1-bg, rgba(245, 158, 11, 0.15));
-      color: var(--priority-p1-text, #fbbf24);
-    }
-
-    .priority-P2 {
-      background: var(--priority-p2-bg, rgba(107, 114, 128, 0.18));
-      color: var(--priority-p2-text, #a9b0bd);
     }
 
     .stale-badge {
       margin-left: auto;
       flex-shrink: 0;
-      font-family: 'Space Mono', monospace;
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 0.5px;
-      text-transform: uppercase;
-      color: var(--stale-text);
-      background: var(--stale-bg);
-      border-radius: 4px;
-      padding: 2px 6px;
     }
 
     .task-title {
@@ -130,6 +91,32 @@ export class KanbrawlTask extends LitElement {
       -webkit-line-clamp: 4;
       -webkit-box-orient: vertical;
       overflow: hidden;
+    }
+
+    .task-images {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin-bottom: 8px;
+    }
+
+    .task-image-thumb {
+      width: 36px;
+      height: 36px;
+      object-fit: cover;
+      border-radius: 6px;
+      border: 1px solid var(--border-subtle);
+    }
+
+    .task-image-count {
+      font-family: 'Space Mono', monospace;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      background: var(--count-bg);
+      border-radius: 8px;
+      padding: 2px 6px;
     }
 
     .task-meta-left {
@@ -175,32 +162,23 @@ export class KanbrawlTask extends LitElement {
       opacity: 1;
     }
 
-    .action-btn {
-      background: none;
+    .action-btn::part(button) {
       border: none;
-      color: var(--text-muted);
-      cursor: pointer;
-      min-width: 28px;
-      min-height: 28px;
       border-radius: 5px;
+      color: var(--text-muted);
       font-size: 14px;
-      line-height: 1;
-      transition:
-        background 0.15s ease,
-        color 0.15s ease;
     }
 
-    .action-btn:hover {
+    .action-btn::part(button):hover:enabled {
       background: var(--border-subtle);
       color: var(--text-primary);
     }
 
-    .action-btn:focus-visible {
-      outline: 2px solid var(--accent);
-      outline-offset: 1px;
+    .action-btn.delete::part(button) {
+      color: var(--text-muted);
     }
 
-    .action-btn.delete:hover {
+    .action-btn.delete::part(button):hover:enabled {
       background: var(--delete-bg);
       color: var(--delete-text);
     }
@@ -210,7 +188,7 @@ export class KanbrawlTask extends LitElement {
         opacity: 1;
       }
 
-      .action-btn {
+      .action-btn::part(button) {
         min-width: 36px;
         min-height: 36px;
         font-size: 16px;
@@ -311,24 +289,30 @@ export class KanbrawlTask extends LitElement {
   render() {
     return html`
       <div class="task-card">
-        <button
-          type="button"
+        <kanbrawl-button
+          variant="plain"
+          block
           class="task-open"
           aria-label="Open task: ${this.task.title}"
           @click=${this.handleViewTask}
         >
           <span class="task-header">
-            <span class="priority-badge priority-${this.task.priority}"
-              >${this.task.priority}</span
+            <kanbrawl-badge
+              class="priority-badge priority-${this.task.priority}"
+              tone=${this.task.priority}
+              size="sm"
+              >${this.task.priority}</kanbrawl-badge
             >
             <span class="task-title">${this.task.title}</span>
             ${this.stale
-              ? html`<span
+              ? html`<kanbrawl-badge
                   class="stale-badge"
+                  tone="stale"
+                  size="sm"
                   title="Last updated ${this.formatFullTimestamp(
                     this.task.updatedAt,
                   )}"
-                  >stale</span
+                  >stale</kanbrawl-badge
                 >`
               : nothing}
           </span>
@@ -336,6 +320,28 @@ export class KanbrawlTask extends LitElement {
             ? html`<span class="task-description"
                 >${this.task.description}</span
               >`
+            : nothing}
+          ${this.task.attachments.length > 0
+            ? html`<span class="task-images">
+                ${this.task.attachments
+                  .slice(0, 3)
+                  .map(
+                    (meta) =>
+                      html`<img
+                        class="task-image-thumb"
+                        src=${attachmentUrl(meta.id)}
+                        alt=""
+                        loading="lazy"
+                        title=${meta.filename}
+                      />`,
+                  )}
+                <span
+                  class="task-image-count"
+                  title="${this.task.attachments.length} image(s)"
+                >
+                  📎 ${this.task.attachments.length}
+                </span>
+              </span>`
             : nothing}
           <span class="task-meta-left">
             <span
@@ -349,24 +355,30 @@ export class KanbrawlTask extends LitElement {
                 >`
               : nothing}
           </span>
-        </button>
+        </kanbrawl-button>
         <div class="task-actions">
-          <button
+          <kanbrawl-button
             class="action-btn"
+            variant="ghost"
+            icon
+            size="sm"
             title="Edit"
             aria-label="Edit ${this.task.title}"
             @click=${this.requestEdit}
           >
             ✎
-          </button>
-          <button
+          </kanbrawl-button>
+          <kanbrawl-button
             class="action-btn delete"
+            variant="danger-outline"
+            icon
+            size="sm"
             title="Delete"
             aria-label="Delete ${this.task.title}"
             @click=${this.requestDelete}
           >
             ✕
-          </button>
+          </kanbrawl-button>
         </div>
       </div>
     `;

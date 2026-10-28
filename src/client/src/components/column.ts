@@ -6,6 +6,7 @@ import {
   type SortBy,
   type SortOrder,
 } from '../../../shared/board.js';
+import './app-button.js';
 
 @customElement('kanbrawl-column')
 export class KanbrawlColumn extends LitElement {
@@ -98,27 +99,19 @@ export class KanbrawlColumn extends LitElement {
     }
 
     .fold-btn {
-      background: none;
-      border: none;
-      color: var(--text-dimmed);
-      cursor: pointer;
+      flex-shrink: 0;
+    }
+
+    .fold-btn::part(button) {
       min-width: 24px;
       min-height: 24px;
+      border: none;
       font-size: 10px;
-      line-height: 1;
-      flex-shrink: 0;
-      transition:
-        color 0.15s ease,
-        transform 0.3s ease;
+      color: var(--text-dimmed);
     }
 
-    .fold-btn:hover {
+    .fold-btn::part(button):hover:enabled {
       color: var(--accent);
-    }
-
-    .fold-btn:focus-visible {
-      outline: 2px solid var(--accent);
-      outline-offset: 1px;
     }
 
     .fold-btn .caret {
@@ -228,27 +221,14 @@ export class KanbrawlColumn extends LitElement {
 
     .add-btn {
       width: 100%;
+    }
+
+    .add-btn::part(button) {
       min-height: 40px;
       padding: 10px;
-      background: transparent;
-      border: 1px dashed var(--border-input);
+      border-style: dashed;
       border-radius: 8px;
-      color: var(--text-muted);
-      font-family: 'DM Sans', sans-serif;
       font-size: 13px;
-      cursor: pointer;
-      transition: all 0.2s ease;
-    }
-
-    .add-btn:hover {
-      border-color: var(--accent);
-      color: var(--accent);
-      background: var(--accent-bg);
-    }
-
-    .add-btn:focus-visible {
-      outline: 2px solid var(--accent);
-      outline-offset: 2px;
     }
 
     @media (max-width: 600px) {
@@ -297,7 +277,7 @@ export class KanbrawlColumn extends LitElement {
         padding: 8px;
       }
 
-      .add-btn {
+      .add-btn::part(button) {
         padding: 10px;
         font-size: 14px;
       }
@@ -305,7 +285,6 @@ export class KanbrawlColumn extends LitElement {
 
     @media (prefers-reduced-motion: reduce) {
       :host,
-      .fold-btn,
       .fold-btn .caret {
         transition: none;
       }
@@ -424,19 +403,28 @@ export class KanbrawlColumn extends LitElement {
       <div class="folded-view" @click=${this.toggleFold}>
         <span class="folded-count">${this.tasks.length}</span>
         <span class="folded-title">${this.name}</span>
-        <button class="fold-btn is-folded" title="Unfold column">
+        <kanbrawl-button
+          class="fold-btn is-folded"
+          variant="ghost"
+          icon
+          size="sm"
+          title="Unfold column"
+        >
           <span class="caret">▼</span>
-        </button>
+        </kanbrawl-button>
       </div>
       <div class="column-header">
         <div class="column-header-left">
-          <button
+          <kanbrawl-button
             class="fold-btn"
+            variant="ghost"
+            icon
+            size="sm"
             @click=${this.toggleFold}
             title="Fold column"
           >
             <span class="caret">▼</span>
-          </button>
+          </kanbrawl-button>
           <span class="column-title">${this.name}</span>
         </div>
         <span class="task-count column-header-right">${this.tasks.length}</span>
@@ -466,7 +454,14 @@ export class KanbrawlColumn extends LitElement {
               )}
       </div>
       <div class="add-area">
-        <button class="add-btn" @click=${this.requestCreate}>+ Add task</button>
+        <kanbrawl-button
+          class="add-btn"
+          variant="outline"
+          block
+          @click=${this.requestCreate}
+        >
+          + Add task
+        </kanbrawl-button>
       </div>
     `;
   }

@@ -1,11 +1,16 @@
 import {
   applyBoardEvent,
+  type AttachmentMeta,
   type Board,
   type BoardEvent,
   type Column,
   type Task,
 } from '../../shared/board.js';
-import type { CreateTaskFields, UpdateTaskFields } from './api.js';
+import type {
+  AttachmentInput,
+  CreateTaskFields,
+  UpdateTaskFields,
+} from './api.js';
 
 export type ConnectionStatus = 'connecting' | 'online' | 'offline';
 
@@ -32,6 +37,11 @@ export type BoardCommands = {
     columns: Column[],
     moveTo?: string,
   ): Promise<{ columns: Column[] }>;
+  addAttachment(
+    taskId: string,
+    image: AttachmentInput,
+  ): Promise<AttachmentMeta>;
+  deleteAttachment(taskId: string, attachmentId: string): Promise<void>;
 };
 
 export type BoardSessionOptions = {
@@ -113,6 +123,37 @@ export class BoardSession {
       board: { ...this.snapshot.board, columns: result.columns },
     });
     await this.refresh();
+  }
+
+  async addAttachment(
+    taskId: string,
+    image: AttachmentInput,
+  ): Promise<AttachmentMeta> {
+    const meta = await this.commands.addAttachment(taskId, image);
+    this.changeAttachments(taskId, (list) => [
+      ...list.filter((item) => item.id !== meta.id),
+      meta,
+    ]);
+    return meta;
+  }
+
+  async deleteAttachment(taskId: string, attachmentId: string): Promise<void> {
+    await this.commands.deleteAttachment(taskId, attachmentId);
+    this.changeAttachments(taskId, (list) =>
+      list.filter((item) => item.id !== attachmentId),
+    );
+  }
+
+  private changeAttachments(
+    taskId: string,
+    change: (list: AttachmentMeta[]) => AttachmentMeta[],
+  ): void {
+    const task = this.snapshot.board.tasks.find((item) => item.id === taskId);
+    this.handleEvent({
+      type: 'attachments_changed',
+      taskId,
+      attachments: change(task?.attachments ?? []),
+    });
   }
 
   private setConnection(status: ConnectionStatus): void {

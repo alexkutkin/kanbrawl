@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { Board, BoardEvent, Column, Task } from '../../shared/board.js';
+import type {
+  AttachmentMeta,
+  Board,
+  BoardEvent,
+  Column,
+  Task,
+} from '../../shared/board.js';
 import { ApiError } from './api.js';
 import {
   BoardSession,
@@ -61,6 +67,23 @@ function makeTask(id: string, title = `Task ${id}`): Task {
     lastActor: 'web',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
+    attachments: [],
+  };
+}
+
+function makeAttachment(
+  id: string,
+  taskId: string,
+  filename = `${id}.png`,
+): AttachmentMeta {
+  return {
+    id,
+    taskId,
+    filename,
+    mimeType: 'image/png',
+    size: 8,
+    sha256: `hash-${id}`,
+    createdAt: '2026-01-01T00:00:00.000Z',
   };
 }
 
@@ -75,6 +98,10 @@ function makeCommands(board = makeBoard()) {
     ),
     deleteTask: vi.fn(async () => undefined),
     updateColumns: vi.fn(async (columns: Column[]) => ({ columns })),
+    addAttachment: vi.fn(async (taskId: string) =>
+      makeAttachment('img-1', taskId),
+    ),
+    deleteAttachment: vi.fn(async () => undefined),
   } satisfies BoardCommands;
 }
 
@@ -204,6 +231,38 @@ describe('BoardSession', () => {
     await session.deleteTask('a');
     expect(commands.deleteTask).toHaveBeenCalledWith('a');
     expect(session.current.board.tasks).toEqual([]);
+  });
+
+  it('adds an attachment locally without touching other fields', async () => {
+    const task = makeTask('task-1');
+    const { session, commands } = await startSession(
+      new FakeTransport(),
+      makeCommands(makeBoard([task])),
+    );
+
+    const meta = await session.addAttachment('task-1', {
+      name: 'shot.png',
+      body: new Uint8Array([1]),
+    });
+    expect(commands.addAttachment).toHaveBeenCalledWith('task-1', {
+      name: 'shot.png',
+      body: new Uint8Array([1]),
+    });
+    expect(session.current.board.tasks[0].attachments).toEqual([meta]);
+    expect(session.current.board.tasks[0].updatedAt).toBe(task.updatedAt);
+  });
+
+  it('deletes an attachment locally', async () => {
+    const task = makeTask('task-1');
+    task.attachments = [makeAttachment('img-1', 'task-1')];
+    const { session, commands } = await startSession(
+      new FakeTransport(),
+      makeCommands(makeBoard([task])),
+    );
+
+    await session.deleteAttachment('task-1', 'img-1');
+    expect(commands.deleteAttachment).toHaveBeenCalledWith('task-1', 'img-1');
+    expect(session.current.board.tasks[0].attachments).toEqual([]);
   });
 
   it('replaces columns and refetches after a column update', async () => {

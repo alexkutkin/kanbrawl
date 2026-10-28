@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import type { Task } from '../../shared/board.js';
-import { transition, type TaskDialogState } from './task-dialog.js';
+import {
+  transition,
+  type StagedImage,
+  type TaskDialogState,
+} from './task-dialog.js';
 
 const TASK: Task = {
   id: 'task-1',
@@ -32,8 +36,18 @@ const CREATE: TaskDialogState = {
   mode: 'create',
   column: 'Todo',
   fields: { title: 'New', description: '', priority: 'P1', assignee: '' },
+  images: [],
   pending: false,
 };
+
+function staged(name: string): StagedImage {
+  return {
+    name,
+    size: 8,
+    previewUrl: `blob:${name}`,
+    body: new Blob([new Uint8Array([1])]),
+  };
+}
 
 describe('task dialog transition', () => {
   it('opens a task view', () => {
@@ -55,6 +69,7 @@ describe('task dialog transition', () => {
       mode: 'create',
       column: 'Blocked',
       fields: { title: '', description: '', priority: 'P1', assignee: '' },
+      images: [],
       pending: false,
     });
   });
@@ -114,6 +129,57 @@ describe('task dialog transition', () => {
     expect(transition(pending, { type: 'change', patch: { title: 'x' } })).toBe(
       pending,
     );
+  });
+
+  it('stages images while creating and keeps their order', () => {
+    const state = transition(CREATE, {
+      type: 'stage',
+      images: [staged('a.png'), staged('b.png')],
+    });
+    expect(
+      state.mode === 'create' && state.images.map((index) => index.name),
+    ).toEqual(['a.png', 'b.png']);
+
+    const more = transition(state, {
+      type: 'stage',
+      images: [staged('c.png')],
+    });
+    expect(
+      more.mode === 'create' && more.images.map((index) => index.name),
+    ).toEqual(['a.png', 'b.png', 'c.png']);
+  });
+
+  it('caps staged images at the server limit', () => {
+    const many = Array.from({ length: 15 }, (_, index) =>
+      staged(`img-${index}.png`),
+    );
+    const state = transition(CREATE, { type: 'stage', images: many });
+    expect(state.mode === 'create' && state.images).toHaveLength(10);
+  });
+
+  it('unstages an image by index', () => {
+    const state = transition(CREATE, {
+      type: 'stage',
+      images: [staged('a.png'), staged('b.png')],
+    });
+    const removed = transition(state, { type: 'unstage', index: 0 });
+    expect(
+      removed.mode === 'create' && removed.images.map((index) => index.name),
+    ).toEqual(['b.png']);
+
+    expect(transition(removed, { type: 'unstage', index: 5 })).toBe(removed);
+  });
+
+  it('ignores staging outside create mode and while pending', () => {
+    expect(transition(VIEW, { type: 'stage', images: [staged('a.png')] })).toBe(
+      VIEW,
+    );
+
+    const pending = transition(CREATE, { type: 'submit' });
+    expect(
+      transition(pending, { type: 'stage', images: [staged('a.png')] }),
+    ).toBe(pending);
+    expect(transition(pending, { type: 'unstage', index: 0 })).toBe(pending);
   });
 
   it('marks the form pending on submit and collapses a double submit', () => {

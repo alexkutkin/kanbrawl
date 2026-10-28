@@ -1,10 +1,17 @@
-import type { Priority, Task } from '../../shared/board.js';
+import { LIMITS, type Priority, type Task } from '../../shared/board.js';
 
 export type TaskFields = {
   title: string;
   description: string;
   priority: Priority;
   assignee: string;
+};
+
+export type StagedImage = {
+  name: string;
+  size: number;
+  previewUrl: string;
+  body: Blob;
 };
 
 export type TaskDialogState =
@@ -21,6 +28,7 @@ export type TaskDialogState =
       mode: 'create';
       column: string;
       fields: TaskFields;
+      images: StagedImage[];
       pending: boolean;
       error?: string;
     };
@@ -30,6 +38,8 @@ export type TaskDialogAction =
   | { type: 'openCreate'; column: string }
   | { type: 'startEdit'; task: Task }
   | { type: 'change'; patch: Partial<TaskFields> & { column?: string } }
+  | { type: 'stage'; images: StagedImage[] }
+  | { type: 'unstage'; index: number }
   | { type: 'submit' }
   | { type: 'fail'; message: string }
   | { type: 'succeed' }
@@ -60,6 +70,7 @@ export function transition(
         mode: 'create',
         column: action.column,
         fields: { title: '', description: '', priority: 'P1', assignee: '' },
+        images: [],
         pending: false,
       };
     }
@@ -92,6 +103,25 @@ export function transition(
       }
 
       return state;
+    }
+
+    case 'stage': {
+      if (state.mode !== 'create' || state.pending) return state;
+      const room = LIMITS.attachmentsPerTask - state.images.length;
+      if (room <= 0) return state;
+      return {
+        ...state,
+        images: [...state.images, ...action.images.slice(0, room)],
+      };
+    }
+
+    case 'unstage': {
+      if (state.mode !== 'create' || state.pending) return state;
+      if (action.index < 0 || action.index >= state.images.length) return state;
+      return {
+        ...state,
+        images: state.images.filter((_, index) => index !== action.index),
+      };
     }
 
     case 'submit': {

@@ -1,6 +1,7 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { Column, SortBy, SortOrder, Task } from '../../../shared/board.js';
+import './app-button.js';
 
 // `crypto.randomUUID` is secure-context only, and the board is served over
 // plain HTTP on the LAN. The draft id just needs to be unique within the
@@ -28,32 +29,11 @@ export class KanbrawlColumnSettings extends LitElement {
       display: inline-block;
     }
 
-    .settings-btn {
-      background: none;
-      border: 1px solid var(--border-input);
-      color: var(--text-secondary);
-      cursor: pointer;
-      padding: 0;
+    .settings-btn::part(button) {
       width: 32px;
-      height: 32px;
-      border-radius: 6px;
+      min-width: 32px;
+      min-height: 32px;
       font-size: 16px;
-      line-height: 1;
-      transition: all 0.2s ease;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .settings-btn:hover {
-      border-color: var(--accent);
-      color: var(--accent);
-      background: var(--accent-bg);
-    }
-
-    .settings-btn:focus-visible {
-      outline: 2px solid var(--accent);
-      outline-offset: 2px;
     }
 
     dialog.modal {
@@ -138,53 +118,37 @@ export class KanbrawlColumnSettings extends LitElement {
     }
 
     .remove-btn {
-      background: none;
-      border: none;
-      color: var(--text-dimmed);
-      cursor: pointer;
-      min-width: 32px;
-      min-height: 32px;
-      border-radius: 4px;
-      font-size: 14px;
-      line-height: 1;
-      transition: all 0.15s ease;
       flex-shrink: 0;
     }
 
-    .remove-btn:hover {
+    .remove-btn::part(button) {
+      min-width: 32px;
+      min-height: 32px;
+      border: none;
+      border-radius: 4px;
+      font-size: 14px;
+      color: var(--text-dimmed);
+    }
+
+    .remove-btn::part(button):hover:enabled {
       color: var(--delete-text);
       background: var(--delete-bg);
     }
 
-    .remove-btn:disabled {
+    .remove-btn::part(button):disabled {
       opacity: 0.35;
-      cursor: not-allowed;
-    }
-
-    .remove-btn:disabled:hover {
-      color: var(--text-dimmed);
-      background: none;
     }
 
     .add-column-btn {
       width: 100%;
-      min-height: 36px;
-      padding: 8px;
-      background: transparent;
-      border: 1px dashed var(--border-input);
-      border-radius: 6px;
-      color: var(--text-muted);
-      font-family: 'DM Sans', sans-serif;
-      font-size: 12px;
-      cursor: pointer;
-      transition: all 0.2s ease;
       margin-bottom: 16px;
     }
 
-    .add-column-btn:hover {
-      border-color: var(--accent);
-      color: var(--accent);
-      background: var(--accent-bg);
+    .add-column-btn::part(button) {
+      min-height: 36px;
+      padding: 8px;
+      border-style: dashed;
+      font-size: 12px;
     }
 
     .move-note {
@@ -222,41 +186,14 @@ export class KanbrawlColumnSettings extends LitElement {
       gap: 8px;
     }
 
-    .modal-actions button {
+    .modal-actions kanbrawl-button {
       flex: 1;
-      min-height: 36px;
-      padding: 8px;
-      border-radius: 6px;
-      border: none;
-      font-family: 'DM Sans', sans-serif;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.15s ease;
     }
 
-    .btn-save {
-      background: var(--accent);
-      color: var(--on-accent);
-    }
-
-    .btn-save:hover {
-      background: var(--accent-hover);
-    }
-
-    .btn-save:disabled {
+    .modal-actions .btn-save::part(button):disabled {
       background: var(--btn-disabled-bg);
       color: var(--btn-disabled-text);
-      cursor: not-allowed;
-    }
-
-    .btn-cancel {
-      background: var(--btn-secondary-bg);
-      color: var(--text-secondary);
-    }
-
-    .btn-cancel:hover {
-      background: var(--btn-secondary-hover);
+      opacity: 1;
     }
 
     .move-btns {
@@ -266,26 +203,20 @@ export class KanbrawlColumnSettings extends LitElement {
       flex-shrink: 0;
     }
 
-    .move-btn {
-      background: none;
-      border: none;
-      color: var(--text-dimmed);
-      cursor: pointer;
+    .move-btn::part(button) {
       min-width: 24px;
       min-height: 24px;
-      padding: 0;
+      border: none;
       font-size: 10px;
-      line-height: 1;
-      transition: color 0.15s ease;
+      color: var(--text-dimmed);
     }
 
-    .move-btn:hover {
+    .move-btn::part(button):hover:enabled {
       color: var(--accent);
     }
 
-    .move-btn:disabled {
+    .move-btn::part(button):disabled {
       opacity: 0.25;
-      cursor: not-allowed;
     }
 
     .sort-row {
@@ -327,10 +258,6 @@ export class KanbrawlColumnSettings extends LitElement {
     @media (prefers-reduced-motion: reduce) {
       dialog.modal[open] {
         animation: none;
-      }
-
-      .settings-btn {
-        transition: none;
       }
     }
   `;
@@ -528,14 +455,16 @@ export class KanbrawlColumnSettings extends LitElement {
 
   render() {
     return html`
-      <button
+      <kanbrawl-button
         class="settings-btn"
+        variant="outline"
+        icon
         title="Configure columns"
         aria-label="Configure columns"
         @click=${this.show}
       >
         ⚙
-      </button>
+      </kanbrawl-button>
       ${this.open
         ? html`
             <dialog
@@ -557,8 +486,11 @@ export class KanbrawlColumnSettings extends LitElement {
                   (column, index) => html`
                     <div class="column-row">
                       <div class="move-btns">
-                        <button
+                        <kanbrawl-button
                           class="move-btn"
+                          variant="ghost"
+                          icon
+                          size="sm"
                           ?disabled=${index === 0 || this.pending}
                           @click=${() => {
                             this.moveColumn(index, -1);
@@ -567,9 +499,12 @@ export class KanbrawlColumnSettings extends LitElement {
                           aria-label="Move ${column.name || 'column'} up"
                         >
                           ▲
-                        </button>
-                        <button
+                        </kanbrawl-button>
+                        <kanbrawl-button
                           class="move-btn"
+                          variant="ghost"
+                          icon
+                          size="sm"
                           ?disabled=${index === this.editColumns.length - 1 ||
                           this.pending}
                           @click=${() => {
@@ -579,7 +514,7 @@ export class KanbrawlColumnSettings extends LitElement {
                           aria-label="Move ${column.name || 'column'} down"
                         >
                           ▼
-                        </button>
+                        </kanbrawl-button>
                       </div>
                       <input
                         type="text"
@@ -594,8 +529,10 @@ export class KanbrawlColumnSettings extends LitElement {
                           );
                         }}
                       />
-                      <button
+                      <kanbrawl-button
                         class="remove-btn"
+                        variant="danger-outline"
+                        icon
                         ?disabled=${this.editColumns.length <= 1 ||
                         this.pending}
                         @click=${() => {
@@ -605,7 +542,7 @@ export class KanbrawlColumnSettings extends LitElement {
                         aria-label="Remove ${column.name || 'column'}"
                       >
                         ✕
-                      </button>
+                      </kanbrawl-button>
                     </div>
                     <div class="sort-row">
                       <span class="sort-label">Sort</span>
@@ -642,32 +579,36 @@ export class KanbrawlColumnSettings extends LitElement {
                   `,
                 )}
               </div>
-              <button
+              <kanbrawl-button
                 class="add-column-btn"
+                variant="outline"
+                block
                 ?disabled=${this.pending}
                 @click=${this.addColumn}
               >
                 + Add column
-              </button>
+              </kanbrawl-button>
               ${this.renderMoveNote()}
               ${this.error
                 ? html`<div class="form-error" role="alert">${this.error}</div>`
                 : nothing}
               <div class="modal-actions">
-                <button
+                <kanbrawl-button
                   class="btn-save"
+                  variant="primary"
                   ?disabled=${!this.isValid || this.pending}
                   @click=${this.save}
                 >
                   ${this.pending ? 'Saving…' : 'Save'}
-                </button>
-                <button
+                </kanbrawl-button>
+                <kanbrawl-button
                   class="btn-cancel"
+                  variant="secondary"
                   ?disabled=${this.pending}
                   @click=${this.close}
                 >
                   Cancel
-                </button>
+                </kanbrawl-button>
               </div>
             </dialog>
           `
