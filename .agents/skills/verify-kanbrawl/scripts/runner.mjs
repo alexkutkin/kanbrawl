@@ -4,7 +4,7 @@
 //
 // Inputs (environment):
 //   KB_BASE_URL  board URL reachable from inside the container
-//   KB_FEATURE   scenario id: board | tasks | drag-drop | task-detail | columns
+//   KB_FEATURE   scenario id: board | tasks | drag-drop | task-detail | columns | attachments
 //   KB_OUT       evidence directory inside the container
 //   KB_PW_ROOT   directory whose node_modules contains `playwright` (default /app)
 import { createRequire } from 'node:module';
@@ -497,12 +497,115 @@ async function scenarioColumns() {
   });
 }
 
+function pngBytes() {
+  // A minimal valid PNG so the server's signature sniffing accepts it.
+  return Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  );
+}
+
+async function scenarioAttachments() {
+  await openBoard();
+  const title = `verify-images-${stamp()}`;
+
+  await check('the create dialog stages an image and uploads it after the task exists', async () => {
+    const todo = await column('Todo');
+    await todo.locator('.add-btn').click();
+    const dialog = page.locator('dialog.task-detail');
+    await dialog.waitFor({ state: 'visible' });
+    await dialog.locator('input.attachment-input').setInputFiles({
+      name: 'verify.png',
+      mimeType: 'image/png',
+      buffer: pngBytes(),
+    });
+    await waitFor(async () => (await dialog.locator('.attachment-thumb img').count()) === 1, {
+      label: 'a staged thumbnail to appear',
+    });
+    await shot('create-dialog-staged');
+
+    await dialog.locator('.detail-edit-form input[placeholder="Task title"]').fill(title);
+    await dialog.locator('.detail-edit-form button[type="submit"]').click();
+    await waitFor(async () => !(await dialog.evaluate((node) => node.open)), {
+      label: 'create dialog to close',
+    });
+
+    await waitForTask(title);
+    const stored = await findTaskByTitle(title);
+    assert(stored, 'created task is missing from the API');
+    assertEqual(stored.attachments.length, 1, 'attachment count after create');
+    assertEqual(stored.attachments[0].filename, 'verify.png', 'attachment filename');
+    assertEqual(stored.attachments[0].mimeType, 'image/png', 'attachment mime type');
+  });
+
+  await check('the card shows a thumbnail and an image count', async () => {
+    const card = await task(title);
+    assertEqual(await card.locator('.task-image-thumb').count(), 1, 'card thumbnails');
+    assert(
+      (await card.locator('.task-image-count').innerText()).includes('1'),
+      'card image count',
+    );
+  });
+
+  await shot('card-thumbnail');
+
+  await check('the dialog shows the thumbnail and the full-size viewer opens', async () => {
+    const card = await task(title);
+    await card.locator('.task-card').click();
+    const dialog = page.locator('dialog.task-detail[open]');
+    await dialog.waitFor({ state: 'visible' });
+    await dialog.locator('.attachment-thumb img').first().waitFor({ state: 'visible' });
+
+    await dialog.locator('.attachment-open').first().click();
+    const viewer = page.locator('dialog.image-viewer[open]');
+    await viewer.waitFor({ state: 'visible' });
+    const src = await viewer.locator('img').getAttribute('src');
+    assert(src.startsWith('/api/attachments/'), `viewer image src: ${src}`);
+    await shot('image-viewer');
+
+    await page.keyboard.press('Escape');
+    await waitFor(async () => (await page.locator('dialog.image-viewer[open]').count()) === 0, {
+      label: 'the viewer to close',
+    });
+  });
+
+  await check('deleting the attachment empties the task images', async () => {
+    const dialog = page.locator('dialog.task-detail[open]');
+    await dialog.locator('.attachment-remove').first().click();
+    await waitFor(async () => (await dialog.locator('.attachment-thumb').count()) === 0, {
+      label: 'the thumbnail to disappear',
+    });
+    const stored = await findTaskByTitle(title);
+    assertEqual(stored.attachments.length, 0, 'attachment count after delete');
+    await shot('attachment-deleted');
+  });
+
+  await check('an image added while editing uploads immediately', async () => {
+    const dialog = page.locator('dialog.task-detail[open]');
+    await dialog.locator('.detail-actions .btn-primary').click();
+    await dialog.locator('input.attachment-input').setInputFiles({
+      name: 'verify-edit.png',
+      mimeType: 'image/png',
+      buffer: pngBytes(),
+    });
+    await waitFor(async () => (await dialog.locator('.attachment-thumb img').count()) === 1, {
+      label: 'the uploaded thumbnail to appear while editing',
+    });
+
+    const stored = await findTaskByTitle(title);
+    assertEqual(stored.attachments.length, 1, 'attachment count after edit-mode upload');
+    assertEqual(stored.attachments[0].filename, 'verify-edit.png', 'attachment filename');
+    await shot('edit-mode-upload');
+  });
+}
+
 const scenarios = {
   board: scenarioBoard,
   tasks: scenarioTasks,
   'drag-drop': scenarioDragDrop,
   'task-detail': scenarioTaskDetail,
   columns: scenarioColumns,
+  attachments: scenarioAttachments,
 };
 
 const scenario = scenarios[FEATURE];

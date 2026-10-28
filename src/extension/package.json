@@ -40,7 +40,7 @@
     "viewsWelcome": [
       {
         "view": "kanbrawlBoard",
-        "contents": "No kanbrawl.json found in this workspace.\n[Initialize Kanbrawl](command:kanbrawl.init)",
+        "contents": "No Kanbrawl board found in this workspace.\n[Initialize Kanbrawl](command:kanbrawl.init)",
         "when": "!kanbrawl.hasBoard"
       }
     ],

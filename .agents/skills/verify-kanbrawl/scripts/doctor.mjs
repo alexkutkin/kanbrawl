@@ -1,8 +1,9 @@
 // Read-only health check: answers "is this verify instance worth driving?".
 // Never mutates the board.
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import process from 'node:process';
+import { DatabaseSync } from 'node:sqlite';
 import {
   CONTAINER_ROOT,
   INSTANCE_FILE,
@@ -61,10 +62,21 @@ try {
 
 if (board) {
   if (!existsSync(instance.dataFile)) {
-    bad(`board file missing: ${instance.dataFile}`);
+    bad(`board database missing: ${instance.dataFile}`);
   } else {
-    const stored = JSON.parse(readFileSync(instance.dataFile, 'utf8'));
-    const storedIds = stored.tasks.map((task) => task.id).sort().join(',');
+    const database = new DatabaseSync(instance.dataFile);
+    let storedIds = '';
+    try {
+      storedIds = database
+        .prepare('SELECT id FROM tasks')
+        .all()
+        .map((row) => row.id)
+        .sort()
+        .join(',');
+    } finally {
+      database.close();
+    }
+
     const servedIds = board.tasks.map((task) => task.id).sort().join(',');
     if (storedIds !== servedIds) {
       bad(
@@ -72,7 +84,7 @@ if (board) {
       );
     } else {
       ok(
-        `board file matches the API (${board.tasks.length} tasks, ${board.columns.length} columns)`,
+        `board database matches the API (${board.tasks.length} tasks, ${board.columns.length} columns)`,
       );
     }
   }

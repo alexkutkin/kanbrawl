@@ -1,6 +1,9 @@
 node_modules/
 dist/
 kanbrawl.json
+kanbrawl.json.imported
+kanbrawl.db
+kanbrawl.db-*
 *.tsbuildinfo
 *.env*
 TODO

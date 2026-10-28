@@ -18,16 +18,17 @@
 
 ---
 
-AI agents manage tasks on a kanban board through [MCP](https://modelcontextprotocol.io) tools. Humans follow along in a live web UI that updates in real-time via Server-Sent Events. Both agents and humans can create, edit, move, and delete tasks — all changes sync instantly.
+AI agents manage tasks on a kanban board through [MCP](https://modelcontextprotocol.io) tools. Humans follow along in a live web UI that updates in real-time via Server-Sent Events. Both agents and humans can create, edit, move, and delete tasks and attach images — all changes sync instantly.
 
 ## Features
 
 - 🤖 **MCP Server** — Exposes kanban operations as MCP tools via HTTP or stdio
 - 🖥️ **Live Web UI** — View updates in real-time and edit/update tasks with drag-and-drop
+- 🖼️ **Image attachments** — Paste, drop or pick screenshots in the UI; agents attach them over MCP
 - ⌨️ **CLI** — Easy setup to configure your AI tools, create and update tasks from the terminal
-- 📄 **Single JSON file** — All board config and task data lives in `kanbrawl.json`
+- 🗄️ **Single SQLite file** — All board config, tasks and images live in `kanbrawl.db`
 - 🔧 **Customizable** — Configure columns to fit your workflow
-- 📦 **Zero infrastructure** — No database, no external services
+- 📦 **Zero infrastructure** — Embedded storage, no external services
 
 ## Getting Started
 
@@ -46,7 +47,7 @@ npx kanbrawl init
 This will:
 1. Let you select your AI tools (VS Code Copilot, Claude Code, Cursor, Gemini CLI, Windsurf)
 2. Generate the appropriate MCP config files using stdio transport
-3. Create a `kanbrawl.json` board file with default columns
+3. Create a `kanbrawl.db` board database with default columns
 4. Append a Kanbrawl usage section to `AGENTS.md`
 
 That's it — your AI agent can now use MCP tools to manage tasks on the board.
@@ -142,32 +143,26 @@ kanbrawl task "Fix login bug" -u -c "Done"
 Interactive setup that:
 1. Prompts to select AI tools (VS Code Copilot, Claude Code, Cursor, Gemini CLI, Windsurf)
 2. Generates MCP config files with stdio transport for each selected tool
-3. Creates `kanbrawl.json` with default columns if missing
+3. Creates `kanbrawl.db` with default columns if missing
 4. Appends a Kanbrawl usage section to `AGENTS.md`
 
 ## Configuration
 
-All configuration and data is stored in `kanbrawl.json`, auto-created on first run:
+All configuration and data lives in a single SQLite database, `kanbrawl.db`,
+auto-created on first run:
 
-```json
-{
-  "columns": [
-    { "id": "…", "name": "Todo", "sortBy": "priority", "sortOrder": "asc" },
-    { "id": "…", "name": "In progress", "sortBy": "created", "sortOrder": "asc" }
-  ],
-  "theme": "dark",
-  "tasks": []
-}
-```
+- **Columns** — identities, names, order and sorting (`priority`, `created` or
+  `updated`); defaults to Todo, In progress, Blocked, Done
+- **Theme** — optional `light`/`dark` UI theme override
+- **Tasks** — tasks with their history metadata
+- **Attachments** — images (PNG, JPEG, GIF or WebP, up to 10 MB and 10 per
+  task), stored content-addressed by SHA-256
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `columns` | `Column[]` | Todo, In progress, Blocked, Done | Column identities, names, order and sorting (`priority`, `created` or `updated`) |
-| `theme` | `"light"` \| `"dark"` | System preference | UI theme override |
-| `tasks` | `Task[]` | `[]` | Task objects (managed by the app) |
+If a legacy `kanbrawl.json` sits next to the database, it is imported once on
+startup and renamed to `kanbrawl.json.imported`.
 
 > [!TIP]
-> Column names are what agents pass to MCP tools. Rename a column through the board's settings (⚙) to keep task references consistent; editing the JSON directly is not recommended.
+> Column names are what agents pass to MCP tools. Rename a column through the board's settings (⚙) to keep task references consistent; editing the database directly is not recommended.
 
 ## MCP Tools
 
@@ -182,6 +177,9 @@ All tools are available via the `/mcp` endpoint.
 | `move_task` | Move a task to a different column | ❌ |
 | `update_task` | Update task fields (title, description, column, priority, assignee) | ❌ |
 | `delete_task` | Delete a task | ❌ |
+| `attach_image` | Attach an image to a task (file `path` preferred, base64 `data` fallback) | ❌ |
+| `get_attachment` | Get an attachment's metadata plus its image bytes | ✅ |
+| `delete_attachment` | Remove an image from a task | ❌ |
 
 Mutations accept `actor` so the board can show who last changed a task. Pass `expectedUpdatedAt` (or `expectedVersion` on `move_task`) to turn a lost update into a `CONFLICT` error instead of silently overwriting another agent's change.
 
@@ -201,7 +199,7 @@ graph LR
     Store["BoardStore"]
   end
 
-  DB[("kanbrawl.json")]
+  DB[("kanbrawl.db")]
 
   A -- "MCP tools<br/>(Streamable HTTP)" --> MCP
   B -- "REST calls" --> API
@@ -217,7 +215,7 @@ graph LR
 
 1. **AI agents** call MCP tools (e.g. `create_task`) via the `/mcp` Streamable HTTP endpoint
 2. **Humans** interact through the web UI, which calls the REST API at `/api/*`
-3. All mutations flow through the **BoardStore**, which persists data to `kanbrawl.json` and emits change events
+3. All mutations flow through the **BoardStore**, which persists data to `kanbrawl.db` and emits change events
 4. The **SSE manager** broadcasts events to all connected browser clients for real-time updates
 
 ## Development

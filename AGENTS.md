@@ -28,7 +28,9 @@ A minimal live kanban board for AI agents, powered by MCP (Model Context Protoco
 
 ## Invariants
 
-- Board state lives in a single `kanbrawl.json`; there is no database.
+- Board state lives in a single SQLite database, `kanbrawl.db`; there is no
+  external database or service. A legacy `kanbrawl.json` next to it is imported
+  once and renamed to `kanbrawl.json.imported`.
 - Every board mutation goes through `BoardStore`, which persists to disk and
   emits the SSE event.
 - The board has no authentication: anyone who reaches the port can view and edit.
@@ -51,7 +53,7 @@ curl -s http://127.0.0.1:8431/healthz
 curl -s http://127.0.0.1:8431/api/board
 ```
 
-Board data lives in `./data/kanbrawl.json` (bind-mounted at `/data`, git-ignored).
+Board data lives in `./data/kanbrawl.db` (bind-mounted at `/data`, git-ignored).
 Never recreate the container against an empty data folder; check the task count
 after every rebuild.
 

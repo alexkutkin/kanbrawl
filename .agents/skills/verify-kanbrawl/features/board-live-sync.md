@@ -1,6 +1,6 @@
 # Live board and sync
 
-The board renders columns and cards from `kanbrawl.json`, shows an empty state on a fresh board, and reflects task changes made by agents or the CLI without a page reload.
+The board renders columns and cards from `kanbrawl.db`, shows an empty state on a fresh board, and reflects task changes made by agents or the CLI without a page reload.
 
 ## Sub-features
 

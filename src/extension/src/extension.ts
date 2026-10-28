@@ -3,15 +3,14 @@ import * as net from 'node:net';
 import * as cp from 'node:child_process';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import {
   MCP_TARGETS,
   ensureAgentsSection,
-  ensureBoardFile,
   writeMcpConfig,
   type McpTarget,
 } from '../../shared/onboarding.js';
+import { ensureBoardFile } from '../../server/store.js';
 import { KanbrawlApiClient, type ConnectionState } from './api.js';
 import { BoardTreeProvider, type BoardItem } from './board-provider.js';
 
@@ -28,13 +27,17 @@ function getWorkspaceRoot(): string | undefined {
   return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 }
 
-function hasKanbrawlJson(): boolean {
+function hasKanbrawlBoard(): boolean {
   const root = getWorkspaceRoot();
   if (!root) {
     return false;
   }
 
-  return fs.existsSync(path.join(root, 'kanbrawl.json'));
+  // A legacy JSON board is accepted because the server imports it on start.
+  return (
+    fs.existsSync(path.join(root, 'kanbrawl.db')) ||
+    fs.existsSync(path.join(root, 'kanbrawl.json'))
+  );
 }
 
 function getServerUrl(): string {
@@ -370,7 +373,7 @@ export async function activate(
         return;
       }
 
-      ensureBoardFile(root, randomUUID);
+      ensureBoardFile(path.join(root, 'kanbrawl.db'));
       for (const item of selected) {
         writeMcpConfig(root, item.target);
       }
@@ -616,7 +619,10 @@ export async function activate(
 
   const root = getWorkspaceRoot();
   if (root) {
-    const pattern = new vscode.RelativePattern(root, 'kanbrawl.json');
+    const pattern = new vscode.RelativePattern(
+      root,
+      '{kanbrawl.db,kanbrawl.json}',
+    );
     const watcher = vscode.workspace.createFileSystemWatcher(pattern);
 
     watcher.onDidCreate(async () => {
@@ -636,7 +642,7 @@ export async function activate(
 
   // ── Initialize board if exists ──────────────────────────────
 
-  if (hasKanbrawlJson()) {
+  if (hasKanbrawlBoard()) {
     await setupBoard(context);
   } else {
     await vscode.commands.executeCommand(

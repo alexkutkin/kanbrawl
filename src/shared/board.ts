@@ -10,6 +10,16 @@ export type Column = {
   sortOrder: SortOrder;
 };
 
+export type AttachmentMeta = {
+  id: string;
+  taskId: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  sha256: string;
+  createdAt: string;
+};
+
 export type Task = {
   id: string;
   title: string;
@@ -21,6 +31,7 @@ export type Task = {
   clientRequestId?: string;
   createdAt: string;
   updatedAt: string;
+  attachments: AttachmentMeta[];
 };
 
 export type Board = {
@@ -34,6 +45,11 @@ export type BoardEvent =
   | { type: 'task_updated'; task: Task }
   | { type: 'task_moved'; task: Task; fromColumn: string }
   | { type: 'task_deleted'; taskId: string }
+  | {
+      type: 'attachments_changed';
+      taskId: string;
+      attachments: AttachmentMeta[];
+    }
   | { type: 'columns_updated'; columns: Column[] }
   | { type: 'board_sync'; board: Board };
 
@@ -41,6 +57,8 @@ export const LIMITS = {
   title: 200,
   description: 4000,
   assignee: 100,
+  attachmentSize: 10 * 1024 * 1024,
+  attachmentsPerTask: 10,
 } as const;
 
 const PRIORITY_ORDER: Record<Priority, number> = { P0: 0, P1: 1, P2: 2 };
@@ -110,6 +128,20 @@ export function applyBoardEvent(
         board: {
           ...board,
           tasks: board.tasks.filter((task) => task.id !== event.taskId),
+        },
+        reload: false,
+      };
+    }
+
+    case 'attachments_changed': {
+      return {
+        board: {
+          ...board,
+          tasks: board.tasks.map((task) =>
+            task.id === event.taskId
+              ? { ...task, attachments: event.attachments }
+              : task,
+          ),
         },
         reload: false,
       };

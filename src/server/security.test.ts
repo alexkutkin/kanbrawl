@@ -9,7 +9,7 @@ import { createHttpApp, createMcpServer } from './index.js';
 
 function createTestApp() {
   const dir = mkdtempSync(join(tmpdir(), 'kanbrawl-http-test-'));
-  const store = new BoardStore(join(dir, 'kanbrawl.json'), { watch: false });
+  const store = new BoardStore(join(dir, 'kanbrawl.db'), { watch: false });
   const sse = new SSEManager();
   const app = createHttpApp(store, sse, createMcpServer(store));
   return { app, store, dir };

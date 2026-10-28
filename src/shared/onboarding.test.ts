@@ -11,14 +11,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   MCP_TARGETS,
   ensureAgentsSection,
-  ensureBoardFile,
   writeMcpConfig,
 } from './onboarding.js';
-
-function counter(): () => string {
-  let next = 0;
-  return () => `id-${next++}`;
-}
 
 describe('onboarding', () => {
   let dir: string;
@@ -47,40 +41,6 @@ describe('onboarding', () => {
       expect(
         MCP_TARGETS.slice(1).every((t) => t.serversKey === 'mcpServers'),
       ).toBe(true);
-    });
-  });
-
-  describe('ensureBoardFile', () => {
-    it('creates a board with default columns and injected ids', () => {
-      expect(ensureBoardFile(dir, counter())).toBe('created');
-
-      const data = JSON.parse(
-        readFileSync(join(dir, 'kanbrawl.json'), 'utf8'),
-      ) as {
-        columns: Array<{ id: string; name: string; sortBy: string }>;
-        tasks: unknown[];
-      };
-      expect(data.columns.map((column) => column.name)).toEqual([
-        'Todo',
-        'In progress',
-        'Blocked',
-        'Done',
-      ]);
-      expect(data.columns.map((column) => column.id)).toEqual([
-        'id-0',
-        'id-1',
-        'id-2',
-        'id-3',
-      ]);
-      expect(data.tasks).toEqual([]);
-    });
-
-    it('leaves an existing board untouched', () => {
-      const boardPath = join(dir, 'kanbrawl.json');
-      writeFileSync(boardPath, '{"columns":[],"tasks":[]}', 'utf8');
-
-      expect(ensureBoardFile(dir, counter())).toBe('exists');
-      expect(readFileSync(boardPath, 'utf8')).toBe('{"columns":[],"tasks":[]}');
     });
   });
 

@@ -1,4 +1,6 @@
+import { Buffer } from 'node:buffer';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -9,9 +11,24 @@ import { createApiRouter } from './api.js';
 
 const DEFAULT_COLUMN_NAMES = ['Todo', 'In progress', 'Blocked', 'Done'];
 
+function pngBytes(seed = 0): Uint8Array {
+  return Buffer.from([
+    0x89,
+    0x50,
+    0x4e,
+    0x47,
+    0x0d,
+    0x0a,
+    0x1a,
+    0x0a,
+    seed % 256,
+    Math.floor(seed / 256) % 256,
+  ]);
+}
+
 function createTestApp() {
   const dir = mkdtempSync(join(tmpdir(), 'kanbrawl-test-'));
-  const filePath = join(dir, 'kanbrawl.json');
+  const filePath = join(dir, 'kanbrawl.db');
   const store = new BoardStore(filePath, { watch: false });
   const app = express();
   app.use(express.json());
@@ -311,6 +328,108 @@ describe('REST API', () => {
     it('returns 400 when columns is missing', async () => {
       const res = await request(app).put('/api/columns').send({});
       expect(res.status).toBe(400);
+    });
+  });
+
+  // --- task attachments ---
+  describe('task attachments', () => {
+    async function createTask(title: string): Promise<string> {
+      const res = await request(app).post('/api/tasks').send({ title });
+      return res.body.id as string;
+    }
+
+    function upload(taskId: string, body: Uint8Array, filename?: string) {
+      const req = request(app)
+        .post(`/api/tasks/${taskId}/attachments`)
+        .set('Content-Type', 'application/octet-stream');
+      return (filename === undefined ? req : req.query({ filename })).send(
+        Buffer.from(body),
+      );
+    }
+
+    it('uploads an image and serves it back with safe headers', async () => {
+      const taskId = await createTask('With image');
+      const bytes = pngBytes(1);
+
+      const uploaded = await upload(taskId, bytes, 'shot.png');
+      expect(uploaded.status).toBe(201);
+      expect(uploaded.body).toMatchObject({
+        taskId,
+        filename: 'shot.png',
+        mimeType: 'image/png',
+        size: bytes.length,
+      });
+      expect(uploaded.headers['content-location']).toBe(
+        `/api/attachments/${uploaded.body.id}`,
+      );
+
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      expect(uploaded.body.sha256).toBe(sha256);
+
+      const served = await request(app).get(
+        `/api/attachments/${uploaded.body.id}`,
+      );
+      expect(served.status).toBe(200);
+      expect(served.headers['content-type']).toBe('image/png');
+      expect(served.headers.etag).toBe(`"${sha256}"`);
+      expect(served.headers['x-content-type-options']).toBe('nosniff');
+      expect(served.headers['content-security-policy']).toBe(
+        "default-src 'none'; sandbox",
+      );
+      expect(served.headers['cache-control']).toContain('immutable');
+      expect(Buffer.from(served.body).equals(Buffer.from(bytes))).toBe(true);
+
+      const cached = await request(app)
+        .get(`/api/attachments/${uploaded.body.id}`)
+        .set('If-None-Match', `"${sha256}"`);
+      expect(cached.status).toBe(304);
+    });
+
+    it('lists the attachment on the task and deletes it', async () => {
+      const taskId = await createTask('Lifecycle');
+      const uploaded = await upload(taskId, pngBytes(2));
+      const attachmentId = uploaded.body.id as string;
+
+      const board = await request(app).get('/api/board');
+      expect(board.body.tasks[0].attachments).toHaveLength(1);
+
+      const deleted = await request(app).delete(
+        `/api/attachments/${attachmentId}`,
+      );
+      expect(deleted.status).toBe(204);
+
+      const gone = await request(app).get(`/api/attachments/${attachmentId}`);
+      expect(gone.status).toBe(404);
+      expect(gone.body.code).toBe('ATTACHMENT_NOT_FOUND');
+
+      const boardAfter = await request(app).get('/api/board');
+      expect(boardAfter.body.tasks[0].attachments).toEqual([]);
+    });
+
+    it('returns the existing attachment for duplicate bytes', async () => {
+      const taskId = await createTask('Deduped');
+      const first = await upload(taskId, pngBytes(3));
+      const second = await upload(taskId, pngBytes(3));
+      expect(second.status).toBe(201);
+      expect(second.body.id).toBe(first.body.id);
+
+      const board = await request(app).get('/api/board');
+      expect(board.body.tasks[0].attachments).toHaveLength(1);
+    });
+
+    it('rejects non-image bytes and unknown tasks', async () => {
+      const taskId = await createTask('Bad uploads');
+
+      const notAnImage = await upload(taskId, Buffer.from('not an image'));
+      expect(notAnImage.status).toBe(415);
+      expect(notAnImage.body.code).toBe('INVALID_ATTACHMENT');
+
+      const unknownTask = await upload('nope', pngBytes(4));
+      expect(unknownTask.status).toBe(404);
+      expect(unknownTask.body.code).toBe('TASK_NOT_FOUND');
+
+      const unknownAttachment = await request(app).get('/api/attachments/nope');
+      expect(unknownAttachment.status).toBe(404);
     });
   });
 });

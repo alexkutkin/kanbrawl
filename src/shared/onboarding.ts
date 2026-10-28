@@ -1,6 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { defaultColumns } from './board.js';
 
 export type McpTarget = {
   name: string;
@@ -59,26 +58,10 @@ Use the Kanbrawl MCP tools for task management when working on this project.
 - Set your name as assignee and pass \`actor\` when you change a task, so humans see who did it
 - Pass \`expectedUpdatedAt\` from the task you read to get a \`CONFLICT\` instead of overwriting another agent's change
 - Move tasks between columns with \`move_task\`, or change fields and column together with \`update_task\`
+- Attach images to a task with \`attach_image\` (pass a file \`path\` when you can; base64 \`data\` is the fallback), and list them in \`get_task\`/\`list_tasks\`
+- Read an image back with \`get_attachment\` (metadata plus the image bytes) and remove it with \`delete_attachment\`
 - Proceed with task execution one at a time, till it's done or blocked then move to the next one
 `;
-
-export function ensureBoardFile(
-  root: string,
-  makeId: () => string,
-): 'created' | 'exists' {
-  const boardPath = resolve(root, 'kanbrawl.json');
-  if (existsSync(boardPath)) {
-    return 'exists';
-  }
-
-  writeFileSync(
-    boardPath,
-    JSON.stringify({ columns: defaultColumns(makeId), tasks: [] }, null, 2) +
-      '\n',
-    'utf8',
-  );
-  return 'created';
-}
 
 export function writeMcpConfig(root: string, target: McpTarget): string {
   const fullPath = resolve(root, target.configPath);

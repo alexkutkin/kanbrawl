@@ -1,13 +1,23 @@
-import { Router, type Response } from 'express';
-import type { Column } from '../shared/board.js';
+import { Buffer } from 'node:buffer';
+import express, {
+  Router,
+  type NextFunction,
+  type Request,
+  type Response,
+} from 'express';
+import { LIMITS, type Column } from '../shared/board.js';
 import { BoardError } from './errors.js';
 import type { BoardStore } from './store.js';
 
 const STATUS_BY_CODE: Record<string, number> = {
   TASK_NOT_FOUND: 404,
   COLUMN_NOT_FOUND: 404,
+  ATTACHMENT_NOT_FOUND: 404,
   DUPLICATE_COLUMN: 409,
   CONFLICT: 409,
+  ATTACHMENT_LIMIT: 409,
+  ATTACHMENT_TOO_LARGE: 413,
+  INVALID_ATTACHMENT: 415,
   BOARD_LOCKED: 503,
   INVALID_BOARD_FILE: 500,
 };
@@ -133,6 +143,105 @@ export function createApiRouter(store: BoardStore): Router {
       sendError(res, error);
     }
   });
+
+  // Upload an image. The bytes are the body; the declared Content-Type is
+  // ignored because the image type is sniffed from the signature.
+  router.post(
+    '/tasks/:id/attachments',
+    express.raw({
+      type: () => true,
+      limit: LIMITS.attachmentSize + 1024,
+    }),
+    (request, res) => {
+      try {
+        const { body } = request;
+        if (!Buffer.isBuffer(body)) {
+          res.status(415).json({
+            error: 'Send the image bytes as the request body.',
+            code: 'INVALID_ATTACHMENT',
+          });
+          return;
+        }
+
+        const filename =
+          typeof request.query.filename === 'string'
+            ? request.query.filename
+            : undefined;
+        const meta = store.addAttachment(request.params.id, {
+          data: body,
+          filename,
+        });
+        res.set('Content-Location', `/api/attachments/${meta.id}`);
+        res.status(201).json(meta);
+      } catch (error) {
+        sendError(res, error);
+      }
+    },
+  );
+
+  router.get('/attachments/:id', (request, res) => {
+    try {
+      const attachment = store.getAttachment(request.params.id);
+      if (!attachment) {
+        throw new BoardError(
+          'ATTACHMENT_NOT_FOUND',
+          `Attachment with id "${request.params.id}" not found.`,
+        );
+      }
+
+      const etag = `"${attachment.meta.sha256}"`;
+      if (request.get('if-none-match') === etag) {
+        res.status(304).end();
+        return;
+      }
+
+      const { filename, mimeType } = attachment.meta;
+      res.set({
+        'Content-Type': mimeType,
+        'Content-Length': String(attachment.data.length),
+        ETag: etag,
+        'Cache-Control': 'public, max-age=31536000, immutable',
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; sandbox",
+        'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(
+          filename,
+        ).replaceAll("'", '%27')}`,
+      });
+      res.send(Buffer.from(attachment.data));
+    } catch (error) {
+      sendError(res, error);
+    }
+  });
+
+  router.delete('/attachments/:id', (request, res) => {
+    try {
+      store.deleteAttachment(request.params.id);
+      res.status(204).end();
+    } catch (error) {
+      sendError(res, error);
+    }
+  });
+
+  router.use(
+    (
+      error: unknown,
+      _request: Request,
+      res: Response,
+      next: NextFunction,
+    ): void => {
+      if ((error as { type?: string }).type === 'entity.too.large') {
+        res.status(413).json({
+          error: `Images must not exceed ${Math.floor(
+            LIMITS.attachmentSize / 1024 / 1024,
+          )} MB.`,
+          code: 'ATTACHMENT_TOO_LARGE',
+        });
+        return;
+      }
+
+      next(error);
+    },
+  );
 
   return router;
 }

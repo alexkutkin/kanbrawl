@@ -1,11 +1,11 @@
 ---
 name: verify-kanbrawl
-description: Verify Kanbrawl end to end by driving the real web UI and REST API with headless Playwright in a disposable Docker sandbox that the harness creates and removes itself (no browser window on the host). Use when a change touches the live board, SSE sync, task CRUD, drag-and-drop, the task detail dialog, column settings, or the REST/MCP data path.
+description: Verify Kanbrawl end to end by driving the real web UI and REST API with headless Playwright in a disposable Docker sandbox that the harness creates and removes itself (no browser window on the host). Use when a change touches the live board, SSE sync, task CRUD, drag-and-drop, the task detail dialog, image attachments, column settings, or the REST/MCP data path.
 ---
 
 # Verify Kanbrawl
 
-Kanbrawl's user surface is a live kanban board: columns rendered from `kanbrawl.json`, cards that update over SSE, a native task-detail dialog, and drag-and-drop between columns. This skill launches an isolated instance, creates a disposable headless Playwright container, drives the instance inside it, and captures screenshots plus a machine-readable report.
+Kanbrawl's user surface is a live kanban board: columns rendered from `kanbrawl.db`, cards that update over SSE, a native task-detail dialog with image attachments, and drag-and-drop between columns. This skill launches an isolated instance, creates a disposable headless Playwright container, drives the instance inside it, and captures screenshots plus a machine-readable report.
 
 Never open a browser on the host desktop, never use `--headed`, and never drive the user's real board on port `8431`.
 
@@ -20,14 +20,14 @@ node .agents/skills/verify-kanbrawl/scripts/launch.mjs
 
 ```text
 ✔ Kanbrawl verify instance running on http://127.0.0.1:8473 (pid …)
-✔ Board file: …/.verify/run/data/kanbrawl.json
+✔ Board database: …/.verify/run/data/kanbrawl.db
 ✔ Columns: Todo, In progress, Blocked, Done
 ✔ disposable sandbox: kanbrawl-verify-8473-… (image playwright-sandbox)
   Container URL: http://host.docker.internal:8473
 ```
 
 - The sandbox reaches the host through `host.docker.internal`, so the server binds `0.0.0.0`. The board has no authentication, so run this only on a machine and network where that is acceptable.
-- The board file is isolated per run; the repository `kanbrawl.json` and the Dockerized board on `8431` are never touched.
+- The board database is isolated per run; the repository `kanbrawl.db` and the Dockerized board on `8431` are never touched.
 - The sandbox container is named `kanbrawl-verify-<port>-<suffix>`, labelled `kanbrawl-verify=1`, and owned by this run. `cleanup.mjs` removes it; it is not the long-lived container other projects use.
 - The server log is `.verify/run/server.log`. If port `8473` is busy the server picks another port, and `launch.mjs` records the actual one in `.verify/run/instance.json`.
 - Teardown is `cleanup.mjs` (see below). A stale `instance.json` with a dead pid is overwritten by the next launch.
@@ -50,7 +50,7 @@ Read-only. Checks, each printed with `✔`/`✖`:
 - the recorded pid is alive;
 - the listening socket on the port belongs to that pid (not another process);
 - `GET /api/board` returns 200;
-- the API's tasks match `.verify/run/data/kanbrawl.json` (catches a stale or foreign instance);
+- the API's tasks match `.verify/run/data/kanbrawl.db` (catches a stale or foreign instance);
 - the sandbox container recorded for this run is running;
 - the sandbox can reach the board URL, falling back to `http://172.17.0.1:<port>` and recording the working URL.
 
@@ -62,7 +62,7 @@ Non-zero exit means do not trust the instance: run `cleanup.mjs`, then `launch.m
 node .agents/skills/verify-kanbrawl/scripts/drive.mjs <feature>
 ```
 
-Features: `board`, `tasks`, `drag-drop`, `task-detail`, `columns`. See [features/README.md](features/README.md) for what each proves and the exact user path.
+Features: `board`, `tasks`, `drag-drop`, `task-detail`, `columns`, `attachments`. See [features/README.md](features/README.md) for what each proves and the exact user path.
 
 How a drive works:
 
@@ -70,7 +70,7 @@ How a drive works:
 2. It executes the runner with `docker exec`, passing `KB_BASE_URL=http://host.docker.internal:<port>`, the feature id, and an evidence directory.
 3. Chromium runs headless in the container; Lit open shadow DOM is pierced by Playwright CSS selectors, so selectors such as `kanbrawl-column .column-title` and `kanbrawl-task .task-title` work.
 4. Every scenario first resets the board through the production REST API (delete all tasks, `PUT /api/columns` with the four defaults), so runs are repeatable.
-5. After the run, evidence is copied back with `docker cp`, and host-side checks compare the served board with `kanbrawl.json` on disk.
+5. After the run, evidence is copied back with `docker cp`, and host-side checks compare the served board with `kanbrawl.db` on disk (task ids, columns, each task's column, attachment ids).
 
 Screenshots and the report land in `.verify/evidence/<run-id>-<feature>/`.
 
@@ -95,7 +95,7 @@ Proof standards:
 
 - Exercise the real user path — clicks, typing, native drag events — or, for the agent path, the real REST endpoints the CLI and MCP tools use. No internal setters or test-only hooks.
 - Capture the action and the resulting state: the screenshot after the mutation plus the assert on the rendered DOM.
-- Verify side effects, not just pixels: each scenario re-reads the task through `GET /api/board`, and `drive.mjs` compares that board with `.verify/run/data/kanbrawl.json` (task ids, columns, each task's column).
+- Verify side effects, not just pixels: each scenario re-reads the task through `GET /api/board`, and `drive.mjs` compares that board with `.verify/run/data/kanbrawl.db` (task ids, columns, each task's column, attachments).
 - A drive is only successful when the process exits 0 and prints `✔ <feature> verified`. A screenshot alone is not proof.
 
 ## Cleanup

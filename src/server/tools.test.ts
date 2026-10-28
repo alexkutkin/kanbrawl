@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { Buffer } from 'node:buffer';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -10,9 +11,24 @@ import { registerTools } from './tools.js';
 
 const DEFAULT_COLUMN_NAMES = ['Todo', 'In progress', 'Blocked', 'Done'];
 
+function pngBytes(seed = 0): Uint8Array {
+  return new Uint8Array([
+    0x89,
+    0x50,
+    0x4e,
+    0x47,
+    0x0d,
+    0x0a,
+    0x1a,
+    0x0a,
+    seed % 256,
+    Math.floor(seed / 256) % 256,
+  ]);
+}
+
 async function createTestMcp() {
   const dir = mkdtempSync(join(tmpdir(), 'kanbrawl-mcp-test-'));
-  const filePath = join(dir, 'kanbrawl.json');
+  const filePath = join(dir, 'kanbrawl.db');
   const store = new BoardStore(filePath, { watch: false });
 
   const mcpServer = new McpServer({
@@ -452,14 +468,169 @@ describe('MCP Tools', () => {
     });
   });
 
+  // --- image attachments ---
+  describe('image attachments', () => {
+    it('attaches an image from a file path', async () => {
+      const imagePath = join(dir, 'shot.png');
+      writeFileSync(imagePath, pngBytes(1));
+      const created = await callTool(client, 'create_task', {
+        title: 'With image',
+      });
+      const taskId = created.json().id as string;
+
+      const result = await callTool(client, 'attach_image', {
+        taskId,
+        path: imagePath,
+      });
+      expect(result.isError).toBeUndefined();
+      expect(result.json()).toMatchObject({
+        taskId,
+        filename: 'shot.png',
+        mimeType: 'image/png',
+        size: pngBytes(1).length,
+      });
+    });
+
+    it('attaches an image from base64 data', async () => {
+      const created = await callTool(client, 'create_task', {
+        title: 'Base64 image',
+      });
+      const taskId = created.json().id as string;
+
+      const result = await callTool(client, 'attach_image', {
+        taskId,
+        data: Buffer.from(pngBytes(2)).toString('base64'),
+        filename: 'pasted.png',
+      });
+      expect(result.isError).toBeUndefined();
+      expect(result.json()).toMatchObject({
+        taskId,
+        filename: 'pasted.png',
+        mimeType: 'image/png',
+      });
+    });
+
+    it('lists attachment metadata in get_task and list_tasks', async () => {
+      const created = await callTool(client, 'create_task', {
+        title: 'Annotated',
+      });
+      const taskId = created.json().id as string;
+      await callTool(client, 'attach_image', {
+        taskId,
+        data: Buffer.from(pngBytes(3)).toString('base64'),
+      });
+
+      const task = await callTool(client, 'get_task', { id: taskId });
+      const attachments = task.json().attachments as Array<{
+        filename: string;
+      }>;
+      expect(attachments).toHaveLength(1);
+      expect(attachments[0].filename).toBe('image.png');
+
+      const listed = await callTool(client, 'list_tasks');
+      expect(listed.json().tasks[0].attachments).toHaveLength(1);
+    });
+
+    it('returns metadata and image bytes with get_attachment', async () => {
+      const created = await callTool(client, 'create_task', {
+        title: 'Fetch image',
+      });
+      const taskId = created.json().id as string;
+      const attached = await callTool(client, 'attach_image', {
+        taskId,
+        data: Buffer.from(pngBytes(4)).toString('base64'),
+      });
+      const attachmentId = attached.json().id as string;
+
+      const result = await callTool(client, 'get_attachment', { attachmentId });
+      expect(result.isError).toBeUndefined();
+      expect(result.json()).toMatchObject({
+        id: attachmentId,
+        taskId,
+        mimeType: 'image/png',
+      });
+
+      const content = result.content as Array<{
+        type: string;
+        data?: string;
+        mimeType?: string;
+      }>;
+      const image = content.find((block) => block.type === 'image');
+      expect(image?.mimeType).toBe('image/png');
+      expect(image?.data).toBe(Buffer.from(pngBytes(4)).toString('base64'));
+    });
+
+    it('deletes an attachment', async () => {
+      const created = await callTool(client, 'create_task', {
+        title: 'Drop image',
+      });
+      const taskId = created.json().id as string;
+      const attached = await callTool(client, 'attach_image', {
+        taskId,
+        data: Buffer.from(pngBytes(5)).toString('base64'),
+      });
+      const attachmentId = attached.json().id as string;
+
+      const deleted = await callTool(client, 'delete_attachment', {
+        attachmentId,
+      });
+      expect(deleted.isError).toBeUndefined();
+      expect(deleted.json().message).toContain(attachmentId);
+
+      const task = await callTool(client, 'get_task', { id: taskId });
+      expect(task.json().attachments).toEqual([]);
+    });
+
+    it('reports stable errors for bad input', async () => {
+      const created = await callTool(client, 'create_task', {
+        title: 'Errors',
+      });
+      const taskId = created.json().id as string;
+
+      const noSource = await callTool(client, 'attach_image', { taskId });
+      expect(noSource.isError).toBe(true);
+      expect(noSource.text).toContain('Error [INVALID_ATTACHMENT]');
+
+      const missingFile = await callTool(client, 'attach_image', {
+        taskId,
+        path: join(dir, 'missing.png'),
+      });
+      expect(missingFile.isError).toBe(true);
+      expect(missingFile.text).toContain('Error [INVALID_ATTACHMENT]');
+
+      const notAnImage = await callTool(client, 'attach_image', {
+        taskId,
+        data: Buffer.from('not an image').toString('base64'),
+      });
+      expect(notAnImage.isError).toBe(true);
+      expect(notAnImage.text).toContain('Error [INVALID_ATTACHMENT]');
+
+      const unknownTask = await callTool(client, 'attach_image', {
+        taskId: 'nope',
+        data: Buffer.from(pngBytes(6)).toString('base64'),
+      });
+      expect(unknownTask.isError).toBe(true);
+      expect(unknownTask.text).toContain('Error [TASK_NOT_FOUND]');
+
+      const unknownAttachment = await callTool(client, 'get_attachment', {
+        attachmentId: 'nope',
+      });
+      expect(unknownAttachment.isError).toBe(true);
+      expect(unknownAttachment.text).toContain('Error [ATTACHMENT_NOT_FOUND]');
+    });
+  });
+
   // --- tool discovery ---
   describe('tool discovery', () => {
     it('lists all registered tools', async () => {
       const { tools } = await client.listTools();
       const toolNames = tools.map((t) => t.name).sort();
       expect(toolNames).toEqual([
+        'attach_image',
         'create_task',
+        'delete_attachment',
         'delete_task',
+        'get_attachment',
         'get_columns',
         'get_task',
         'list_tasks',
@@ -478,6 +649,13 @@ describe('MCP Tools', () => {
       for (const name of ['move_task', 'update_task', 'delete_task']) {
         expect(byName.get(name)?.annotations?.idempotentHint).toBe(false);
       }
+
+      expect(byName.get('get_attachment')?.annotations?.readOnlyHint).toBe(
+        true,
+      );
+      expect(
+        byName.get('delete_attachment')?.annotations?.destructiveHint,
+      ).toBe(true);
 
       expect(byName.get('delete_task')?.description).not.toMatch(/errorneous/);
     });

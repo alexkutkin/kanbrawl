@@ -1,25 +1,40 @@
 import {
+  existsSync,
   mkdtempSync,
-  rmSync,
-  readFileSync,
   readdirSync,
+  rmSync,
   writeFileSync,
-  utimesSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import type { BoardEvent, Column } from '../shared/board.js';
+import { LIMITS, type BoardEvent, type Column } from '../shared/board.js';
 import { BoardStore } from './store.js';
 import { BoardError } from './errors.js';
 
 const DEFAULT_COLUMN_NAMES = ['Todo', 'In progress', 'Blocked', 'Done'];
 
+function pngBytes(seed = 0): Uint8Array {
+  return new Uint8Array([
+    0x89,
+    0x50,
+    0x4e,
+    0x47,
+    0x0d,
+    0x0a,
+    0x1a,
+    0x0a,
+    seed % 256,
+    Math.floor(seed / 256) % 256,
+  ]);
+}
+
 function createTestStore(watch = false) {
   const dir = mkdtempSync(join(tmpdir(), 'kanbrawl-store-test-'));
-  const filePath = join(dir, 'kanbrawl.json');
-  const store = new BoardStore(filePath, { watch });
-  return { store, filePath, dir };
+  const databasePath = join(dir, 'kanbrawl.db');
+  const store = new BoardStore(databasePath, { watch });
+  return { store, databasePath, dir };
 }
 
 async function delay(ms: number): Promise<void> {
@@ -28,20 +43,31 @@ async function delay(ms: number): Promise<void> {
   });
 }
 
-function readBoard(filePath: string) {
-  return JSON.parse(readFileSync(filePath, 'utf8')) as {
-    columns: Column[];
-    tasks: Array<{ title: string; column: string }>;
-  };
+function readBoard(databasePath: string) {
+  const store = new BoardStore(databasePath, { watch: false });
+  try {
+    return store.getBoard();
+  } finally {
+    store.dispose();
+  }
+}
+
+function writeLegacyJson(dir: string, data: unknown): string {
+  const filePath = join(dir, 'kanbrawl.json');
+  writeFileSync(
+    filePath,
+    typeof data === 'string' ? data : JSON.stringify(data),
+  );
+  return filePath;
 }
 
 describe('BoardStore', () => {
   let store: BoardStore;
-  let filePath: string;
+  let databasePath: string;
   let dir: string;
 
   beforeEach(() => {
-    ({ store, filePath, dir } = createTestStore());
+    ({ store, databasePath, dir } = createTestStore());
   });
 
   afterEach(() => {
@@ -51,8 +77,9 @@ describe('BoardStore', () => {
 
   // --- Initialization ---
   describe('initialization', () => {
-    it('creates kanbrawl.json with defaults when file does not exist', () => {
-      const data = readBoard(filePath);
+    it('creates the database with default columns when it does not exist', () => {
+      expect(existsSync(databasePath)).toBe(true);
+      const data = readBoard(databasePath);
       expect(data.columns.map((column) => column.name)).toEqual(
         DEFAULT_COLUMN_NAMES,
       );
@@ -61,70 +88,79 @@ describe('BoardStore', () => {
       expect(data.tasks).toEqual([]);
     });
 
-    it('loads existing data from file', () => {
-      const existingDirectory = mkdtempSync(
-        join(tmpdir(), 'kanbrawl-store-test-'),
-      );
-      const existingPath = join(existingDirectory, 'kanbrawl.json');
-      writeFileSync(
-        existingPath,
-        JSON.stringify({
-          columns: [
-            { name: 'A', sortBy: 'created', sortOrder: 'asc' },
-            { name: 'B', sortBy: 'updated', sortOrder: 'desc' },
-          ],
-          tasks: [
-            {
-              id: 'test-id',
-              title: 'Existing',
-              description: '',
-              column: 'A',
-              priority: 'P1',
-              assignee: '',
-              createdAt: '2025-01-01T00:00:00.000Z',
-              updatedAt: '2025-01-01T00:00:00.000Z',
-            },
-          ],
-        }),
-      );
-
-      const loaded = new BoardStore(existingPath, { watch: false });
-      expect(loaded.getColumnNames()).toEqual(['A', 'B']);
+    it('loads existing data from the database', () => {
+      store.createTask({ title: 'Persisted' });
+      const loaded = new BoardStore(databasePath, { watch: false });
+      expect(loaded.getColumnNames()).toEqual(DEFAULT_COLUMN_NAMES);
       expect(loaded.getTasks()).toHaveLength(1);
-      expect(loaded.getTasks()[0].title).toBe('Existing');
+      expect(loaded.getTasks()[0].title).toBe('Persisted');
       loaded.dispose();
-      rmSync(existingDirectory, { recursive: true, force: true });
     });
 
-    it('fills in missing fields and files from a partial file', () => {
-      const partialDirectory = mkdtempSync(
+    it('imports a legacy JSON board once and renames it', () => {
+      const legacyDirectory = mkdtempSync(
         join(tmpdir(), 'kanbrawl-store-test-'),
       );
-      const partialPath = join(partialDirectory, 'kanbrawl.json');
-      writeFileSync(partialPath, JSON.stringify({}));
+      const jsonPath = writeLegacyJson(legacyDirectory, {
+        columns: [
+          { name: 'A', sortBy: 'created', sortOrder: 'asc' },
+          { name: 'B', sortBy: 'updated', sortOrder: 'desc' },
+        ],
+        tasks: [
+          {
+            id: 'test-id',
+            title: 'Existing',
+            description: '',
+            column: 'A',
+            priority: 'P1',
+            assignee: '',
+            createdAt: '2025-01-01T00:00:00.000Z',
+            updatedAt: '2025-01-01T00:00:00.000Z',
+          },
+        ],
+      });
 
-      const loaded = new BoardStore(partialPath, { watch: false });
-      expect(loaded.getColumnNames()).toEqual(DEFAULT_COLUMN_NAMES);
-      expect(loaded.getTasks()).toEqual([]);
-      loaded.dispose();
-      rmSync(partialDirectory, { recursive: true, force: true });
+      const imported = new BoardStore(join(legacyDirectory, 'kanbrawl.db'), {
+        watch: false,
+      });
+      expect(imported.getColumnNames()).toEqual(['A', 'B']);
+      expect(imported.getTasks()).toHaveLength(1);
+      expect(imported.getTasks()[0].title).toBe('Existing');
+      imported.dispose();
+
+      expect(existsSync(jsonPath)).toBe(false);
+      expect(existsSync(`${jsonPath}.imported`)).toBe(true);
+      rmSync(legacyDirectory, { recursive: true, force: true });
+    });
+
+    it('fills in missing fields when importing a partial JSON board', () => {
+      const legacyDirectory = mkdtempSync(
+        join(tmpdir(), 'kanbrawl-store-test-'),
+      );
+      writeLegacyJson(legacyDirectory, {});
+
+      const imported = new BoardStore(join(legacyDirectory, 'kanbrawl.db'), {
+        watch: false,
+      });
+      expect(imported.getColumnNames()).toEqual(DEFAULT_COLUMN_NAMES);
+      expect(imported.getTasks()).toEqual([]);
+      imported.dispose();
+      rmSync(legacyDirectory, { recursive: true, force: true });
     });
 
     it('migrates old string[] columns to Column[] objects with IDs', () => {
-      const migrateDirectory = mkdtempSync(
+      const legacyDirectory = mkdtempSync(
         join(tmpdir(), 'kanbrawl-store-test-'),
       );
-      const migratePath = join(migrateDirectory, 'kanbrawl.json');
-      writeFileSync(
-        migratePath,
-        JSON.stringify({
-          columns: ['Todo', 'In progress', 'Done'],
-          tasks: [],
-        }),
-      );
+      writeLegacyJson(legacyDirectory, {
+        columns: ['Todo', 'In progress', 'Done'],
+        tasks: [],
+      });
 
-      const loaded = new BoardStore(migratePath, { watch: false });
-      const columns = loaded.getColumns();
+      const imported = new BoardStore(join(legacyDirectory, 'kanbrawl.db'), {
+        watch: false,
+      });
+      const columns = imported.getColumns();
       expect(columns.map((column) => column.name)).toEqual([
         'Todo',
         'In progress',
@@ -133,53 +169,70 @@ describe('BoardStore', () => {
       expect(columns.every((column) => Boolean(column.id))).toBe(true);
       expect(columns[0].sortBy).toBe('priority');
       expect(columns[2].sortOrder).toBe('desc');
-      loaded.dispose();
-      rmSync(migrateDirectory, { recursive: true, force: true });
+      imported.dispose();
+      rmSync(legacyDirectory, { recursive: true, force: true });
     });
 
     it('sanitizes bad stored tasks instead of breaking reads', () => {
-      const dirtyDirectory = mkdtempSync(
+      const legacyDirectory = mkdtempSync(
         join(tmpdir(), 'kanbrawl-store-test-'),
       );
-      const dirtyPath = join(dirtyDirectory, 'kanbrawl.json');
-      writeFileSync(
-        dirtyPath,
-        JSON.stringify({
-          columns: [
-            { name: 'Todo', sortBy: 'priority', sortOrder: 'asc' },
-            { name: 'Done', sortBy: 'updated', sortOrder: 'desc' },
-          ],
-          tasks: [
-            {
-              id: 'bad',
-              title: '  ',
-              column: 'Missing',
-              priority: 'P9',
-            },
-            { id: 'bad', title: 'Duplicate id', column: 'Done' },
-          ],
-        }),
-      );
+      writeLegacyJson(legacyDirectory, {
+        columns: [
+          { name: 'Todo', sortBy: 'priority', sortOrder: 'asc' },
+          { name: 'Done', sortBy: 'updated', sortOrder: 'desc' },
+        ],
+        tasks: [
+          {
+            id: 'bad',
+            title: '  ',
+            column: 'Missing',
+            priority: 'P9',
+          },
+          { id: 'bad', title: 'Duplicate id', column: 'Done' },
+        ],
+      });
 
-      const loaded = new BoardStore(dirtyPath, { watch: false });
-      const tasks = loaded.getTasks();
+      const imported = new BoardStore(join(legacyDirectory, 'kanbrawl.db'), {
+        watch: false,
+      });
+      const tasks = imported.getTasks();
       expect(tasks).toHaveLength(2);
       expect(new Set(tasks.map((task) => task.id)).size).toBe(2);
       expect(tasks[0].title).toBe('Untitled task');
       expect(tasks[0].column).toBe('Todo');
       expect(tasks[0].priority).toBe('P1');
-      loaded.dispose();
-      rmSync(dirtyDirectory, { recursive: true, force: true });
+      imported.dispose();
+      rmSync(legacyDirectory, { recursive: true, force: true });
     });
 
-    it('throws a BoardError when the file is not valid JSON', () => {
-      const badDirectory = mkdtempSync(join(tmpdir(), 'kanbrawl-store-test-'));
-      const badPath = join(badDirectory, 'kanbrawl.json');
-      writeFileSync(badPath, '{not json');
-      expect(() => new BoardStore(badPath, { watch: false })).toThrow(
-        BoardError,
+    it('does not import JSON into a database that already has data', () => {
+      store.createTask({ title: 'Database wins' });
+      store.dispose();
+      writeLegacyJson(dir, {
+        columns: [{ name: 'Legacy', sortBy: 'created', sortOrder: 'asc' }],
+        tasks: [],
+      });
+
+      store = new BoardStore(databasePath, { watch: false });
+      expect(store.getColumnNames()).toEqual(DEFAULT_COLUMN_NAMES);
+      expect(store.getTasks()).toHaveLength(1);
+      expect(existsSync(join(dir, 'kanbrawl.json'))).toBe(true);
+    });
+
+    it('throws a BoardError when the legacy file is not valid JSON', () => {
+      const legacyDirectory = mkdtempSync(
+        join(tmpdir(), 'kanbrawl-store-test-'),
       );
-      rmSync(badDirectory, { recursive: true, force: true });
+      writeLegacyJson(legacyDirectory, '{not json');
+      expect(
+        () =>
+          new BoardStore(join(legacyDirectory, 'kanbrawl.db'), {
+            watch: false,
+          }),
+      ).toThrow(BoardError);
+      expect(existsSync(join(legacyDirectory, 'kanbrawl.json'))).toBe(true);
+      rmSync(legacyDirectory, { recursive: true, force: true });
     });
   });
 
@@ -229,6 +282,7 @@ describe('BoardStore', () => {
       expect(task.assignee).toBe('');
       expect(task.lastActor).toBe('');
       expect(task.id).toBeDefined();
+      expect(task.attachments).toEqual([]);
       expect(task.createdAt).toBe(task.updatedAt);
     });
 
@@ -273,15 +327,12 @@ describe('BoardStore', () => {
       ).toThrow(/does not exist/);
     });
 
-    it('persists to disk atomically without leaving temp files', () => {
+    it('persists to disk and leaves no lock or temporary files', () => {
       store.createTask({ title: 'Persisted' });
-      const data = readBoard(filePath);
-      expect(data.tasks).toHaveLength(1);
-      expect(data.tasks[0].title).toBe('Persisted');
-      expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual(
-        [],
-      );
-      expect(readdirSync(dir)).not.toContain('kanbrawl.json.lock');
+      expect(readBoard(databasePath).tasks[0].title).toBe('Persisted');
+      expect(
+        readdirSync(dir).filter((name) => /\.(tmp|lock)$/.test(name)),
+      ).toEqual([]);
     });
 
     it('emits task_created once', () => {
@@ -410,8 +461,18 @@ describe('BoardStore', () => {
       store.onChange((event) => events.push(event));
       store.deleteTask(task.id);
       expect(store.getTasks()).toHaveLength(0);
-      expect(readBoard(filePath).tasks).toHaveLength(0);
+      expect(readBoard(databasePath).tasks).toHaveLength(0);
       expect(events[0].type).toBe('task_deleted');
+    });
+
+    it('deletes the task attachments with it', () => {
+      const task = store.createTask({ title: 'With image' });
+      const meta = store.addAttachment(task.id, {
+        data: pngBytes(1),
+        filename: 'shot.png',
+      });
+      store.deleteTask(task.id);
+      expect(store.getAttachment(meta.id)).toBeUndefined();
     });
   });
 
@@ -502,17 +563,146 @@ describe('BoardStore', () => {
         { name: 'Beta', sortBy: 'created', sortOrder: 'desc' },
       ]);
       expect(events.at(-1)?.type).toBe('columns_updated');
-      expect(readBoard(filePath).columns.map((column) => column.name)).toEqual([
-        'Alpha',
-        'Beta',
-      ]);
+      expect(
+        readBoard(databasePath).columns.map((column) => column.name),
+      ).toEqual(['Alpha', 'Beta']);
+    });
+  });
+
+  // --- attachments ---
+  describe('attachments', () => {
+    function addPng(taskId: string, seed = 1) {
+      return store.addAttachment(taskId, {
+        data: pngBytes(seed),
+        filename: 'screenshot.png',
+      });
+    }
+
+    it('stores an image and exposes it on the task and the board', () => {
+      const task = store.createTask({ title: 'With image' });
+      const meta = addPng(task.id);
+      expect(meta.mimeType).toBe('image/png');
+      expect(meta.size).toBe(pngBytes(1).length);
+      expect(meta.sha256).toBe(
+        createHash('sha256').update(pngBytes(1)).digest('hex'),
+      );
+      expect(
+        store.getTask(task.id)!.attachments.map((item) => item.id),
+      ).toEqual([meta.id]);
+      expect(store.getBoard().tasks[0].attachments).toHaveLength(1);
+      const content = store.getAttachment(meta.id)!;
+      expect(Uint8Array.from(content.data)).toEqual(pngBytes(1));
+    });
+
+    it('sniffs the type and ignores the filename extension', () => {
+      const task = store.createTask({ title: 'Sniffed' });
+      const meta = store.addAttachment(task.id, {
+        data: pngBytes(2),
+        filename: 'photo.jpg',
+      });
+      expect(meta.mimeType).toBe('image/png');
+      expect(meta.filename).toBe('photo.jpg');
+    });
+
+    it('sanitizes the filename and falls back to a default', () => {
+      const task = store.createTask({ title: 'Names' });
+      expect(
+        store.addAttachment(task.id, {
+          data: pngBytes(3),
+          filename: '../../shot.png',
+        }).filename,
+      ).toBe('shot.png');
+
+      const unnamed = store.addAttachment(task.id, { data: pngBytes(4) });
+      expect(unnamed.filename).toBe('image.png');
+    });
+
+    it('deduplicates identical images on one task', () => {
+      const task = store.createTask({ title: 'Same image' });
+      const first = addPng(task.id, 5);
+      const events: BoardEvent[] = [];
+      store.onChange((event) => events.push(event));
+      const second = addPng(task.id, 5);
+      expect(second.id).toBe(first.id);
+      expect(store.getTask(task.id)!.attachments).toHaveLength(1);
+      expect(events).toHaveLength(0);
+    });
+
+    it('rejects non-images, empty data and oversized images', () => {
+      const task = store.createTask({ title: 'Rejected' });
+      expect(() =>
+        store.addAttachment(task.id, {
+          data: new TextEncoder().encode('not an image'),
+          filename: 'notes.txt',
+        }),
+      ).toThrow(/PNG, JPEG, GIF and WebP/);
+      expect(() =>
+        store.addAttachment(task.id, { data: new Uint8Array(0) }),
+      ).toThrow(/empty/);
+      expect(() =>
+        store.addAttachment(task.id, {
+          data: new Uint8Array(LIMITS.attachmentSize + 1).fill(1),
+        }),
+      ).toThrow(/10 MB/);
+      expect(store.getTask(task.id)!.attachments).toHaveLength(0);
+    });
+
+    it('limits the number of images per task', () => {
+      const task = store.createTask({ title: 'Limit' });
+      for (let index = 0; index < LIMITS.attachmentsPerTask; index += 1) {
+        addPng(task.id, 10 + index);
+      }
+
+      expect(() => addPng(task.id, 100)).toThrow(/at most 10/);
+    });
+
+    it('emits attachments_changed without touching updatedAt', () => {
+      const task = store.createTask({ title: 'Evented image' });
+      const events: BoardEvent[] = [];
+      store.onChange((event) => events.push(event));
+      const meta = addPng(task.id);
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe('attachments_changed');
+      if (events[0].type === 'attachments_changed') {
+        expect(events[0].taskId).toBe(task.id);
+        expect(events[0].attachments.map((item) => item.id)).toEqual([meta.id]);
+      }
+
+      expect(store.getTask(task.id)!.updatedAt).toBe(task.updatedAt);
+    });
+
+    it('deletes an image and reports the remaining list', () => {
+      const task = store.createTask({ title: 'Delete image' });
+      const first = addPng(task.id, 20);
+      const second = addPng(task.id, 21);
+      const events: BoardEvent[] = [];
+      store.onChange((event) => events.push(event));
+      store.deleteAttachment(first.id);
+      expect(store.getAttachment(first.id)).toBeUndefined();
+      expect(events[0].type).toBe('attachments_changed');
+      if (events[0].type === 'attachments_changed') {
+        expect(events[0].attachments.map((item) => item.id)).toEqual([
+          second.id,
+        ]);
+      }
+    });
+
+    it('throws for unknown attachments and tasks', () => {
+      expect(() => {
+        store.deleteAttachment('nonexistent');
+      }).toThrow(/not found/);
+      const task = store.createTask({ title: 'Missing target' });
+      expect(() =>
+        store.addAttachment('nonexistent', { data: pngBytes(30) }),
+      ).toThrow(/not found/);
+      expect(store.getTask(task.id)!.attachments).toHaveLength(0);
     });
   });
 
   // --- multi-process safety ---
-  describe('shared file safety', () => {
+  describe('shared database safety', () => {
     it('sees writes made by another store instance', () => {
-      const other = new BoardStore(filePath, { watch: false });
+      const other = new BoardStore(databasePath, { watch: false });
       const created = other.createTask({ title: 'From another process' });
       expect(store.getTask(created.id)!.title).toBe('From another process');
 
@@ -521,27 +711,18 @@ describe('BoardStore', () => {
       other.dispose();
     });
 
-    it('recovers from a stale lock file', () => {
-      const lockPath = `${filePath}.lock`;
-      writeFileSync(lockPath, 'stale');
-      const old = new Date(Date.now() - 60_000);
-      utimesSync(lockPath, old, old);
-      const task = store.createTask({ title: 'After stale lock' });
-      expect(task.title).toBe('After stale lock');
-    });
-
     it('broadcasts external changes to listeners', async () => {
       store.dispose();
-      store = new BoardStore(filePath, { watch: true });
+      store = new BoardStore(databasePath, { watch: true });
       const events: BoardEvent[] = [];
       store.onChange((event) => events.push(event));
-      const other = new BoardStore(filePath, { watch: false });
+      const other = new BoardStore(databasePath, { watch: false });
       other.createTask({ title: 'External' });
 
-      const deadline = Date.now() + 3000;
+      const deadline = Date.now() + 4000;
       while (Date.now() < deadline && events.length === 0) {
         // eslint-disable-next-line no-await-in-loop
-        await delay(25);
+        await delay(50);
       }
 
       other.dispose();

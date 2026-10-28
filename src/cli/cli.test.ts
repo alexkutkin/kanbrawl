@@ -10,22 +10,33 @@ import { taskAction } from './commands/task.js';
 describe('task command', () => {
   let dir: string;
   let originalCwd: string;
+  let stores: BoardStore[] = [];
+
+  function openStore(): BoardStore {
+    const store = new BoardStore(join(dir, 'kanbrawl.db'));
+    stores.push(store);
+    return store;
+  }
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'kanbrawl-cli-test-'));
     originalCwd = process.cwd();
+    stores = [];
     process.chdir(dir);
   });
 
   afterEach(() => {
     process.chdir(originalCwd);
+    for (const store of stores) {
+      store.dispose();
+    }
+
     rmSync(dir, { recursive: true, force: true });
   });
 
   it('creates a task with defaults', () => {
     taskAction('My task', { priority: '1' });
-    const store = new BoardStore(join(dir, 'kanbrawl.json'));
-    const tasks = store.getTasks();
+    const tasks = openStore().getTasks();
     expect(tasks).toHaveLength(1);
     expect(tasks[0].title).toBe('My task');
     expect(tasks[0].priority).toBe('P1');
@@ -39,8 +50,7 @@ describe('task command', () => {
       priority: '0',
       assignee: 'alice',
     });
-    const store = new BoardStore(join(dir, 'kanbrawl.json'));
-    const tasks = store.getTasks();
+    const tasks = openStore().getTasks();
     expect(tasks).toHaveLength(1);
     expect(tasks[0].title).toBe('Full task');
     expect(tasks[0].description).toBe('A description');
@@ -57,8 +67,7 @@ describe('task command', () => {
       priority: '2',
       assignee: 'bob',
     });
-    const store = new BoardStore(join(dir, 'kanbrawl.json'));
-    const tasks = store.getTasks();
+    const tasks = openStore().getTasks();
     expect(tasks).toHaveLength(1);
     expect(tasks[0].description).toBe('Updated desc');
     expect(tasks[0].priority).toBe('P2');
@@ -72,15 +81,14 @@ describe('task command', () => {
       column: 'Done',
       priority: '1',
     });
-    const store = new BoardStore(join(dir, 'kanbrawl.json'));
-    const tasks = store.getTasks();
+    const tasks = openStore().getTasks();
     expect(tasks).toHaveLength(1);
     expect(tasks[0].column).toBe('Done');
   });
 
   it('sets exitCode when updating a non-existent task', () => {
-    // Ensure kanbrawl.json exists
-    new BoardStore(join(dir, 'kanbrawl.json')); // eslint-disable-line no-new
+    // Ensure kanbrawl.db exists
+    openStore();
     const originalExitCode = process.exitCode;
     taskAction('Does not exist', { update: true, priority: '1' });
     expect(process.exitCode).toBe(1);

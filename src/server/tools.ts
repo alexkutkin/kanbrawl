@@ -1,8 +1,21 @@
+import { Buffer } from 'node:buffer';
+import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
 import { type McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { LIMITS, type Task } from '../shared/board.js';
+import { LIMITS, type AttachmentMeta, type Task } from '../shared/board.js';
 import { BoardError } from './errors.js';
 import type { BoardStore } from './store.js';
+
+const attachmentSchema = z.object({
+  id: z.string().describe('Attachment ID (UUID)'),
+  taskId: z.string().describe('Task the image belongs to'),
+  filename: z.string(),
+  mimeType: z.string().describe('Sniffed image type (png, jpeg, gif, webp)'),
+  size: z.number().describe('Image size in bytes'),
+  sha256: z.string().describe('Content hash of the image bytes'),
+  createdAt: z.string(),
+});
 
 const publicTaskSchema = z.object({
   id: z.string(),
@@ -18,6 +31,9 @@ const publicTaskSchema = z.object({
     .describe('Who last changed the task (agent name, "human", or empty)'),
   createdAt: z.string(),
   updatedAt: z.string(),
+  attachments: z
+    .array(attachmentSchema)
+    .describe('Images attached to the task; fetch bytes with get_attachment'),
 });
 
 const taskOutputSchema = publicTaskSchema.shape;
@@ -448,5 +464,153 @@ export function registerTools(server: McpServer, store: BoardStore): void {
         return toolError(error);
       }
     },
+  );
+
+  server.registerTool(
+    'attach_image',
+    {
+      title: 'Attach Image',
+      description:
+        'Attach an image (PNG, JPEG, GIF or WebP) to a task. Prefer path: it points at a file on the machine running the Kanbrawl server. Use base64 data only when no file path is available. The image type is sniffed from the bytes; the declared mimeType is ignored.',
+      inputSchema: {
+        taskId: z.string().describe('Task ID (UUID) to attach the image to'),
+        path: z
+          .string()
+          .optional()
+          .describe(
+            'Path to an image file on the server machine (preferred over data)',
+          ),
+        data: z
+          .string()
+          .optional()
+          .describe(
+            'Base64-encoded image bytes (fallback when path is unusable)',
+          ),
+        filename: z
+          .string()
+          .optional()
+          .describe('Display name for the attachment (default: from path)'),
+        mimeType: z
+          .string()
+          .optional()
+          .describe('Ignored: the image type is sniffed from the bytes'),
+      },
+      outputSchema: attachmentSchema.shape,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ taskId, path, data, filename }) => {
+      try {
+        const meta = store.addAttachment(taskId, {
+          data: readImageBytes(path, data),
+          filename:
+            filename ?? (path === undefined ? undefined : basename(path)),
+        });
+        return ok({ ...meta });
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'get_attachment',
+    {
+      title: 'Get Attachment',
+      description:
+        'Get an attached image: metadata as text plus the image bytes as an ImageContent block.',
+      inputSchema: {
+        attachmentId: z.string().describe('Attachment ID (UUID)'),
+      },
+      outputSchema: attachmentSchema.shape,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async ({ attachmentId }) => {
+      const attachment = store.getAttachment(attachmentId);
+      if (!attachment) {
+        return toolError(
+          new BoardError(
+            'ATTACHMENT_NOT_FOUND',
+            `Attachment with id "${attachmentId}" not found.`,
+          ),
+        );
+      }
+
+      const { meta } = attachment;
+      return {
+        content: [
+          { type: 'text' as const, text: JSON.stringify(meta, null, 2) },
+          {
+            type: 'image' as const,
+            data: Buffer.from(attachment.data).toString('base64'),
+            mimeType: meta.mimeType,
+          },
+        ],
+        structuredContent: { ...meta },
+      };
+    },
+  );
+
+  server.registerTool(
+    'delete_attachment',
+    {
+      title: 'Delete Attachment',
+      description:
+        'Remove an image from a task. Use only for erroneous or test attachments: this cannot be undone.',
+      inputSchema: {
+        attachmentId: z.string().describe('Attachment ID (UUID) to delete'),
+      },
+      outputSchema: {
+        message: z.string().describe('Confirmation message'),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ attachmentId }) => {
+      try {
+        store.deleteAttachment(attachmentId);
+        return ok({
+          message: `Attachment "${attachmentId}" has been deleted.`,
+        });
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+}
+
+function readImageBytes(path?: string, data?: string): Uint8Array {
+  if (path !== undefined && path.length > 0) {
+    try {
+      return new Uint8Array(readFileSync(path));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new BoardError(
+        'INVALID_ATTACHMENT',
+        `Cannot read image file "${path}": ${reason}`,
+      );
+    }
+  }
+
+  if (data !== undefined) {
+    return Uint8Array.from(Buffer.from(data, 'base64'));
+  }
+
+  throw new BoardError(
+    'INVALID_ATTACHMENT',
+    'Provide an image either as path (preferred) or as base64 data.',
   );
 }

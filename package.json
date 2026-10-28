@@ -48,7 +48,7 @@
     "release:check": "semantic-release --dry-run"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13"
   },
   "release": {
     "extends": "semantic-release-npm-github",

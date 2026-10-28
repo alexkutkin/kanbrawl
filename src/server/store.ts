@@ -1,21 +1,13 @@
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync, renameSync, rmSync } from 'node:fs';
+import { resolve } from 'node:path';
 import process from 'node:process';
-import {
-  readFileSync,
-  writeFileSync,
-  existsSync,
-  statSync,
-  renameSync,
-  unlinkSync,
-  openSync,
-  closeSync,
-  watch,
-  type FSWatcher,
-} from 'node:fs';
-import { basename, dirname, resolve } from 'node:path';
+import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { v4 as uuidv4 } from 'uuid';
 import {
   LIMITS,
   defaultColumns,
+  type AttachmentMeta,
   type Board,
   type BoardEvent,
   type Column,
@@ -25,9 +17,87 @@ import {
   type Task,
 } from '../shared/board.js';
 import { BoardError } from './errors.js';
+import { detectImageType, sanitizeFilename, type ImageType } from './images.js';
 
 const SORT_FIELDS = new Set<SortBy>(['priority', 'created', 'updated']);
 const PRIORITIES = new Set<Priority>(['P0', 'P1', 'P2']);
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS columns (
+  position INTEGER PRIMARY KEY,
+  id TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL UNIQUE,
+  sort_by TEXT NOT NULL,
+  sort_order TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS tasks (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL,
+  column_name TEXT NOT NULL,
+  priority TEXT NOT NULL,
+  assignee TEXT NOT NULL,
+  last_actor TEXT NOT NULL,
+  client_request_id TEXT UNIQUE,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tasks_column_idx ON tasks(column_name);
+CREATE TABLE IF NOT EXISTS blobs (
+  sha256 TEXT PRIMARY KEY,
+  mime_type TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  data BLOB NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS attachments (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  sha256 TEXT NOT NULL REFERENCES blobs(sha256),
+  filename TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
+`;
+
+type ColumnRow = {
+  position: number;
+  id: string;
+  name: string;
+  sort_by: SortBy;
+  sort_order: SortOrder;
+};
+
+type TaskRow = {
+  id: string;
+  title: string;
+  description: string;
+  column_name: string;
+  priority: Priority;
+  assignee: string;
+  last_actor: string;
+  client_request_id: string | undefined;
+  created_at: string;
+  updated_at: string;
+};
+
+type AttachmentRow = {
+  id: string;
+  task_id: string;
+  sha256: string;
+  filename: string;
+  position: number;
+  created_at: string;
+  mime_type: string;
+  size: number;
+};
+
+type AttachmentRowWithData = AttachmentRow & { data: Uint8Array };
 
 function isPriority(value: unknown): value is Priority {
   return PRIORITIES.has(value as Priority);
@@ -43,15 +113,6 @@ function clone<T>(value: T): T {
 
 function now(): string {
   return new Date().toISOString();
-}
-
-function fileStamp(filePath: string): string {
-  try {
-    const stats = statSync(filePath);
-    return `${stats.mtimeMs}:${stats.size}`;
-  } catch {
-    return '';
-  }
 }
 
 function normalizeTitle(value: unknown): string {
@@ -270,10 +331,50 @@ function normalizeStoredTasks(
       ...(clientRequestId ? { clientRequestId } : {}),
       createdAt,
       updatedAt,
+      attachments: [],
     });
   }
 
   return { tasks, changed };
+}
+
+function toColumn(row: ColumnRow): Column {
+  return {
+    id: row.id,
+    name: row.name,
+    sortBy: row.sort_by,
+    sortOrder: row.sort_order,
+  };
+}
+
+function toAttachment(row: AttachmentRow): AttachmentMeta {
+  return {
+    id: row.id,
+    taskId: row.task_id,
+    filename: row.filename,
+    mimeType: row.mime_type,
+    size: Number(row.size),
+    sha256: row.sha256,
+    createdAt: row.created_at,
+  };
+}
+
+function toTask(row: TaskRow, attachments: AttachmentMeta[]): Task {
+  return {
+    id: row.id,
+    title: row.title,
+    description: row.description,
+    column: row.column_name,
+    priority: row.priority,
+    assignee: row.assignee,
+    lastActor: row.last_actor,
+    ...(row.client_request_id
+      ? { clientRequestId: row.client_request_id }
+      : {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    attachments,
+  };
 }
 
 type TaskFields = {
@@ -293,189 +394,303 @@ export type BoardStoreOptions = {
   watch?: boolean;
 };
 
-export class BoardStore {
-  private data: Board;
-  private readonly filePath: string;
-  private readonly lockPath: string;
-  private stamp = '';
-  private listeners: Array<(event: BoardEvent) => void> = [];
-  private watcher: FSWatcher | undefined;
-  private syncTimer: ReturnType<typeof setTimeout> | undefined;
+export type AttachmentInput = {
+  data: Uint8Array;
+  filename?: string;
+};
 
-  constructor(filePath?: string, options: BoardStoreOptions = {}) {
-    this.filePath = filePath ?? resolve(process.cwd(), 'kanbrawl.json');
-    this.lockPath = `${this.filePath}.lock`;
-    const loaded = this.readFromDisk();
-    this.data = loaded.data;
-    this.stamp = loaded.stamp;
-    if (loaded.changed) {
-      this.writeAtomic(this.data);
+export type AttachmentContent = {
+  meta: AttachmentMeta;
+  data: Uint8Array;
+};
+
+function legacyJsonPath(databasePath: string): string {
+  const replaced = databasePath.replace(/\.[^./\\]+$/, '.json');
+  return replaced === databasePath ? `${databasePath}.json` : replaced;
+}
+
+export function ensureBoardFile(databasePath: string): 'created' | 'exists' {
+  if (existsSync(databasePath)) {
+    return 'exists';
+  }
+
+  const store = new BoardStore(databasePath, { watch: false });
+  store.dispose();
+  return 'created';
+}
+
+export class BoardStore {
+  private readonly database: DatabaseSync;
+  private readonly legacyPath: string;
+  private readonly watchTimer: ReturnType<typeof setInterval> | undefined;
+  private dataVersion = 0;
+  private transactionDepth = 0;
+  private listeners: Array<(event: BoardEvent) => void> = [];
+  private disposed = false;
+
+  private readonly selectColumns: StatementSync;
+  private readonly selectTasks: StatementSync;
+  private readonly selectTasksByColumn: StatementSync;
+  private readonly selectTask: StatementSync;
+  private readonly selectTaskByRequest: StatementSync;
+  private readonly selectAttachments: StatementSync;
+  private readonly selectAttachmentsByTask: StatementSync;
+  private readonly selectAttachment: StatementSync;
+  private readonly selectAttachmentWithBlob: StatementSync;
+  private readonly selectAttachmentByHash: StatementSync;
+  private readonly countAttachments: StatementSync;
+  private readonly countColumns: StatementSync;
+  private readonly insertColumn: StatementSync;
+  private readonly deleteColumns: StatementSync;
+  private readonly insertTask: StatementSync;
+  private readonly updateTaskRow: StatementSync;
+  private readonly updateTaskColumn: StatementSync;
+  private readonly deleteTaskRow: StatementSync;
+  private readonly insertBlob: StatementSync;
+  private readonly insertAttachment: StatementSync;
+  private readonly deleteAttachmentRow: StatementSync;
+  private readonly deleteOrphanBlobs: StatementSync;
+  private readonly selectMeta: StatementSync;
+  private readonly upsertMeta: StatementSync;
+
+  constructor(databasePath?: string, options: BoardStoreOptions = {}) {
+    const filePath = databasePath ?? resolve(process.cwd(), 'kanbrawl.db');
+    this.legacyPath = legacyJsonPath(filePath);
+    this.database = new DatabaseSync(filePath);
+
+    this.database.exec(`
+      PRAGMA journal_mode = WAL;
+      PRAGMA synchronous = NORMAL;
+      PRAGMA foreign_keys = ON;
+      PRAGMA busy_timeout = 5000;
+      PRAGMA auto_vacuum = INCREMENTAL;
+    `);
+    this.database.exec(SCHEMA);
+
+    this.selectColumns = this.database.prepare(
+      'SELECT * FROM columns ORDER BY position',
+    );
+    this.selectTasks = this.database.prepare(
+      'SELECT * FROM tasks ORDER BY created_at, rowid',
+    );
+    this.selectTasksByColumn = this.database.prepare(
+      'SELECT * FROM tasks WHERE column_name = ? ORDER BY created_at, rowid',
+    );
+    this.selectTask = this.database.prepare('SELECT * FROM tasks WHERE id = ?');
+    this.selectTaskByRequest = this.database.prepare(
+      'SELECT * FROM tasks WHERE client_request_id = ?',
+    );
+    this.selectAttachments = this.database.prepare(
+      `SELECT a.*, b.mime_type, b.size FROM attachments a
+       JOIN blobs b ON b.sha256 = a.sha256
+       ORDER BY a.position`,
+    );
+    this.selectAttachmentsByTask = this.database.prepare(
+      `SELECT a.*, b.mime_type, b.size FROM attachments a
+       JOIN blobs b ON b.sha256 = a.sha256
+       WHERE a.task_id = ?
+       ORDER BY a.position`,
+    );
+    this.selectAttachment = this.database.prepare(
+      'SELECT * FROM attachments WHERE id = ?',
+    );
+    this.selectAttachmentWithBlob = this.database.prepare(
+      `SELECT a.*, b.mime_type, b.size, b.data FROM attachments a
+       JOIN blobs b ON b.sha256 = a.sha256
+       WHERE a.id = ?`,
+    );
+    this.selectAttachmentByHash = this.database.prepare(
+      `SELECT a.*, b.mime_type, b.size FROM attachments a
+       JOIN blobs b ON b.sha256 = a.sha256
+       WHERE a.task_id = ? AND a.sha256 = ?`,
+    );
+    this.countAttachments = this.database.prepare(
+      'SELECT COUNT(*) AS count FROM attachments WHERE task_id = ?',
+    );
+    this.countColumns = this.database.prepare(
+      'SELECT COUNT(*) AS count FROM columns',
+    );
+    this.insertColumn = this.database.prepare(
+      `INSERT INTO columns (position, id, name, sort_by, sort_order)
+       VALUES (?, ?, ?, ?, ?)`,
+    );
+    this.deleteColumns = this.database.prepare('DELETE FROM columns');
+    this.insertTask = this.database.prepare(
+      `INSERT INTO tasks (
+        id, title, description, column_name, priority, assignee,
+        last_actor, client_request_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    this.updateTaskRow = this.database.prepare(
+      `UPDATE tasks SET
+        title = ?, description = ?, column_name = ?, priority = ?,
+        assignee = ?, last_actor = ?, updated_at = ?
+       WHERE id = ?`,
+    );
+    this.updateTaskColumn = this.database.prepare(
+      'UPDATE tasks SET column_name = ?, updated_at = ? WHERE id = ?',
+    );
+    this.deleteTaskRow = this.database.prepare(
+      'DELETE FROM tasks WHERE id = ?',
+    );
+    this.insertBlob = this.database.prepare(
+      `INSERT OR IGNORE INTO blobs (sha256, mime_type, size, data, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    );
+    this.insertAttachment = this.database.prepare(
+      `INSERT INTO attachments (id, task_id, sha256, filename, position, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    this.deleteAttachmentRow = this.database.prepare(
+      'DELETE FROM attachments WHERE id = ?',
+    );
+    this.deleteOrphanBlobs = this.database.prepare(
+      'DELETE FROM blobs WHERE sha256 NOT IN (SELECT sha256 FROM attachments)',
+    );
+    this.selectMeta = this.database.prepare(
+      'SELECT value FROM meta WHERE key = ?',
+    );
+    this.upsertMeta = this.database.prepare(
+      `INSERT INTO meta (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    );
+
+    try {
+      this.importLegacyJson();
+      if (Number(this.countColumns.get()?.count ?? 0) === 0) {
+        this.writeColumns(defaultColumns(uuidv4));
+      }
+    } catch (error) {
+      this.database.close();
+      throw error;
     }
 
     if (options.watch !== false) {
-      this.startWatching();
+      this.watchTimer = this.startWatching();
     }
   }
 
-  private readFromDisk(): {
-    data: Board;
-    stamp: string;
-    changed: boolean;
-  } {
-    if (!existsSync(this.filePath)) {
-      return {
-        data: { columns: defaultColumns(uuidv4), tasks: [] },
-        stamp: '',
-        changed: true,
-      };
-    }
+  private importLegacyJson(): void {
+    if (Number(this.countColumns.get()?.count ?? 0) > 0) return;
+    if (!existsSync(this.legacyPath)) return;
 
-    const raw = readFileSync(this.filePath, 'utf8');
     let parsed: Partial<Board> & { columns?: Array<Column | string> };
     try {
-      parsed = JSON.parse(raw) as Partial<Board> & {
-        columns?: Array<Column | string>;
-      };
+      parsed = JSON.parse(
+        readFileSync(this.legacyPath, 'utf8'),
+      ) as Partial<Board> & { columns?: Array<Column | string> };
     } catch {
       throw new BoardError(
         'INVALID_BOARD_FILE',
-        `Board file "${this.filePath}" is not valid JSON.`,
+        `Board file "${this.legacyPath}" is not valid JSON.`,
       );
     }
 
-    const { columns, changed: columnsChanged } = normalizeStoredColumns(
-      parsed.columns,
-    );
-    const { tasks, changed: tasksChanged } = normalizeStoredTasks(
-      parsed.tasks,
-      columns,
-    );
+    const { columns } = normalizeStoredColumns(parsed.columns);
+    const { tasks } = normalizeStoredTasks(parsed.tasks, columns);
 
-    return {
-      data: {
-        columns,
-        tasks,
-        ...(parsed.theme ? { theme: parsed.theme } : {}),
-      },
-      stamp: fileStamp(this.filePath),
-      changed: columnsChanged || tasksChanged,
-    };
-  }
-
-  private writeAtomic(data: Board): void {
-    const temporaryPath = `${this.filePath}.${process.pid}.${uuidv4()}.tmp`;
-    writeFileSync(temporaryPath, JSON.stringify(data, null, 2) + '\n', 'utf8');
-    renameSync(temporaryPath, this.filePath);
-    this.stamp = fileStamp(this.filePath);
-  }
-
-  private syncFromDisk(): void {
-    if (!existsSync(this.filePath)) return;
-    if (fileStamp(this.filePath) === this.stamp) return;
-    const loaded = this.readFromDisk();
-    this.data = loaded.data;
-    this.stamp = loaded.stamp;
-  }
-
-  private startWatching(): void {
-    try {
-      this.watcher = watch(dirname(this.filePath), (_event, filename) => {
-        if (filename && filename !== basename(this.filePath)) return;
-        if (this.syncTimer) clearTimeout(this.syncTimer);
-        this.syncTimer = setTimeout(() => {
-          this.syncTimer = undefined;
-          this.handleExternalChange();
-        }, 50);
-        this.syncTimer.unref();
-      });
-      this.watcher.unref();
-      this.watcher.on('error', () => {
-        this.stopWatching();
-      });
-    } catch {
-      this.watcher = undefined;
-    }
-  }
-
-  private stopWatching(): void {
-    if (this.syncTimer) {
-      clearTimeout(this.syncTimer);
-      this.syncTimer = undefined;
-    }
-
-    this.watcher?.close();
-    this.watcher = undefined;
-  }
-
-  private handleExternalChange(): void {
-    try {
-      if (!existsSync(this.filePath)) return;
-      if (fileStamp(this.filePath) === this.stamp) return;
-      const loaded = this.readFromDisk();
-      this.data = loaded.data;
-      this.stamp = loaded.stamp;
-      this.emit({ type: 'board_sync', board: this.getBoard() });
-    } catch {
-      // A concurrent writer may be mid-replace; the next event will retry.
-    }
-  }
-
-  private acquireLock(): () => void {
-    const deadline = Date.now() + 5000;
-    for (;;) {
-      try {
-        closeSync(openSync(this.lockPath, 'wx'));
-        break;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
-          throw error;
-        }
-
-        this.removeStaleLock();
-        if (Date.now() > deadline) {
-          throw new BoardError(
-            'BOARD_LOCKED',
-            'The board file is locked by another process.',
-          );
-        }
-
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    this.transaction(() => {
+      this.writeColumns(columns);
+      for (const task of tasks) {
+        this.insertTask.run(
+          task.id,
+          task.title,
+          task.description,
+          task.column,
+          task.priority,
+          task.assignee,
+          task.lastActor,
+          task.clientRequestId ?? null,
+          task.createdAt,
+          task.updatedAt,
+        );
       }
-    }
 
-    return () => {
-      try {
-        unlinkSync(this.lockPath);
-      } catch {}
-    };
-  }
-
-  private removeStaleLock(): void {
-    try {
-      if (Date.now() - statSync(this.lockPath).mtimeMs > 10_000) {
-        unlinkSync(this.lockPath);
+      if (parsed.theme === 'light' || parsed.theme === 'dark') {
+        this.upsertMeta.run('theme', parsed.theme);
       }
+    });
+
+    try {
+      const importedPath = `${this.legacyPath}.imported`;
+      rmSync(importedPath, { force: true });
+      renameSync(this.legacyPath, importedPath);
     } catch {}
   }
 
-  private mutate<T>(
-    operation: (data: Board) => { result: T; events: BoardEvent[] },
-  ): T {
-    const release = this.acquireLock();
-    try {
-      this.syncFromDisk();
-      const draft = clone(this.data);
-      const { result, events } = operation(draft);
-      this.data = draft;
-      this.writeAtomic(draft);
-      for (const event of events) {
-        this.emit(event);
+  private startWatching(): ReturnType<typeof setInterval> {
+    this.dataVersion = this.readDataVersion();
+    const timer = setInterval(() => {
+      try {
+        const version = this.readDataVersion();
+        if (version === this.dataVersion) return;
+        this.dataVersion = version;
+        this.emit({ type: 'board_sync', board: this.readBoard() });
+      } catch {
+        // The database may be busy with another commit; the next tick retries.
       }
+    }, 1000);
+    timer.unref();
+    return timer;
+  }
 
+  private readDataVersion(): number {
+    const row = this.database.prepare('PRAGMA data_version').get() as
+      | { data_version: number }
+      | undefined;
+    return row?.data_version ?? 0;
+  }
+
+  private transaction<T>(operation: () => T): T {
+    this.database.exec('BEGIN IMMEDIATE');
+    this.transactionDepth++;
+    try {
+      const result = operation();
+      this.transactionDepth--;
+      this.database.exec('COMMIT');
       return result;
-    } finally {
-      release();
+    } catch (error) {
+      this.transactionDepth--;
+      try {
+        this.database.exec('ROLLBACK');
+      } catch {}
+
+      throw error;
     }
+  }
+
+  private readTransaction<T>(operation: () => T): T {
+    if (this.transactionDepth > 0) return operation();
+    this.database.exec('BEGIN');
+    this.transactionDepth++;
+    try {
+      const result = operation();
+      this.transactionDepth--;
+      this.database.exec('COMMIT');
+      return result;
+    } catch (error) {
+      this.transactionDepth--;
+      try {
+        this.database.exec('ROLLBACK');
+      } catch {}
+
+      throw error;
+    }
+  }
+
+  private mutate<T>(operation: () => { result: T; events: BoardEvent[] }): T {
+    const { result, events } = this.transaction(operation);
+    for (const event of events) {
+      this.emit(event);
+    }
+
+    return result;
+  }
+
+  private compact(): void {
+    try {
+      this.database.exec('PRAGMA incremental_vacuum');
+    } catch {}
   }
 
   private emit(event: BoardEvent): void {
@@ -487,40 +702,64 @@ export class BoardStore {
   onChange(listener: (event: BoardEvent) => void): () => void {
     this.listeners.push(listener);
     return () => {
-      this.listeners = this.listeners.filter((l) => l !== listener);
+      this.listeners = this.listeners.filter((item) => item !== listener);
     };
   }
 
-  getBoard(): Board {
-    this.syncFromDisk();
-    return clone(this.data);
+  private readColumns(): Column[] {
+    return (this.selectColumns.all() as unknown as ColumnRow[]).map((row) =>
+      toColumn(row),
+    );
   }
 
-  getColumns(): Column[] {
-    this.syncFromDisk();
-    return clone(this.data.columns);
+  private readAttachments(taskId?: string): AttachmentMeta[] {
+    const rows = (taskId === undefined
+      ? this.selectAttachments.all()
+      : this.selectAttachmentsByTask.all(taskId)) as unknown as AttachmentRow[];
+    return rows.map((row) => toAttachment(row));
   }
 
-  getColumnNames(): string[] {
-    return this.getColumns().map((column) => column.name);
+  private readTasks(column?: string): Task[] {
+    const rows = (column === undefined
+      ? this.selectTasks.all()
+      : this.selectTasksByColumn.all(column)) as unknown as TaskRow[];
+    if (rows.length === 0) return [];
+
+    const attachments = new Map<string, AttachmentMeta[]>();
+    for (const meta of this.readAttachments()) {
+      const list = attachments.get(meta.taskId) ?? [];
+      list.push(meta);
+      attachments.set(meta.taskId, list);
+    }
+
+    return rows.map((row) => toTask(row, attachments.get(row.id) ?? []));
   }
 
-  getTasks(column?: string): Task[] {
-    this.syncFromDisk();
-    const tasks = column
-      ? this.data.tasks.filter((task) => task.column === column)
-      : this.data.tasks;
-    return clone(tasks);
+  private readTask(id: string): Task | undefined {
+    const row = this.selectTask.get(id) as unknown as TaskRow | undefined;
+    if (!row) return undefined;
+    return toTask(row, this.readAttachments(id));
   }
 
-  getTask(id: string): Task | undefined {
-    this.syncFromDisk();
-    const task = this.data.tasks.find((item) => item.id === id);
-    return task ? clone(task) : undefined;
+  private readBoard(): Board {
+    return this.readTransaction(() => {
+      const themeRow = this.selectMeta.get('theme') as
+        | { value: string }
+        | undefined;
+      const theme =
+        themeRow?.value === 'light' || themeRow?.value === 'dark'
+          ? themeRow.value
+          : undefined;
+      return {
+        columns: this.readColumns(),
+        tasks: this.readTasks(),
+        ...(theme ? { theme } : {}),
+      };
+    });
   }
 
-  private findTask(data: Board, id: string): Task {
-    const task = data.tasks.find((item) => item.id === id);
+  private findTask(id: string): Task {
+    const task = this.readTask(id);
     if (!task) {
       throw new BoardError('TASK_NOT_FOUND', `Task with id "${id}" not found.`);
     }
@@ -528,9 +767,9 @@ export class BoardStore {
     return task;
   }
 
-  private requireColumn(data: Board, name: string): string {
+  private requireColumn(name: string): string {
     const target = typeof name === 'string' ? name.trim() : '';
-    const names = data.columns.map((column) => column.name);
+    const names = this.readColumns().map((column) => column.name);
     if (!names.includes(target)) {
       throw new BoardError(
         'COLUMN_NOT_FOUND',
@@ -563,6 +802,53 @@ export class BoardStore {
     }
   }
 
+  private writeTask(task: Task): void {
+    this.updateTaskRow.run(
+      task.title,
+      task.description,
+      task.column,
+      task.priority,
+      task.assignee,
+      task.lastActor,
+      task.updatedAt,
+      task.id,
+    );
+  }
+
+  private writeColumns(columns: Column[]): void {
+    this.deleteColumns.run();
+    for (const [position, column] of columns.entries()) {
+      this.insertColumn.run(
+        position,
+        column.id,
+        column.name,
+        column.sortBy,
+        column.sortOrder,
+      );
+    }
+  }
+
+  getBoard(): Board {
+    return clone(this.readBoard());
+  }
+
+  getColumns(): Column[] {
+    return clone(this.readTransaction(() => this.readColumns()));
+  }
+
+  getColumnNames(): string[] {
+    return this.getColumns().map((column) => column.name);
+  }
+
+  getTasks(column?: string): Task[] {
+    return clone(this.readTransaction(() => this.readTasks(column)));
+  }
+
+  getTask(id: string): Task | undefined {
+    const task = this.readTransaction(() => this.readTask(id));
+    return task ? clone(task) : undefined;
+  }
+
   createTask(fields: {
     title: string;
     description?: string;
@@ -572,7 +858,7 @@ export class BoardStore {
     actor?: string;
     clientRequestId?: string;
   }): Task {
-    return this.mutate((data) => {
+    return this.mutate(() => {
       const title = normalizeTitle(fields.title);
       const description = normalizeDescription(fields.description ?? '');
       const assignee = normalizeAssignee(fields.assignee ?? '');
@@ -582,8 +868,8 @@ export class BoardStore {
           : normalizePriority(fields.priority);
       const column =
         fields.column === undefined
-          ? data.columns[0].name
-          : this.requireColumn(data, fields.column);
+          ? this.readColumns()[0].name
+          : this.requireColumn(fields.column);
       const clientRequestId =
         typeof fields.clientRequestId === 'string' &&
         fields.clientRequestId.trim().length > 0
@@ -591,11 +877,14 @@ export class BoardStore {
           : undefined;
 
       if (clientRequestId) {
-        const existing = data.tasks.find(
-          (task) => task.clientRequestId === clientRequestId,
-        );
+        const existing = this.selectTaskByRequest.get(clientRequestId) as
+          | TaskRow
+          | undefined;
         if (existing) {
-          return { result: clone(existing), events: [] };
+          return {
+            result: clone(toTask(existing, this.readAttachments(existing.id))),
+            events: [],
+          };
         }
       }
 
@@ -611,9 +900,22 @@ export class BoardStore {
         ...(clientRequestId ? { clientRequestId } : {}),
         createdAt: timestamp,
         updatedAt: timestamp,
+        attachments: [],
       };
 
-      data.tasks.push(task);
+      this.insertTask.run(
+        task.id,
+        task.title,
+        task.description,
+        task.column,
+        task.priority,
+        task.assignee,
+        task.lastActor,
+        task.clientRequestId ?? null,
+        task.createdAt,
+        task.updatedAt,
+      );
+
       return {
         result: clone(task),
         events: [{ type: 'task_created', task: clone(task) }],
@@ -634,8 +936,8 @@ export class BoardStore {
   }
 
   updateTask(id: string, fields: TaskFields & TaskMutationOptions): Task {
-    return this.mutate((data) => {
-      const task = this.findTask(data, id);
+    return this.mutate(() => {
+      const task = this.findTask(id);
       this.assertExpected(task, fields.expectedUpdatedAt);
       const fromColumn = task.column;
       let changed = false;
@@ -661,7 +963,7 @@ export class BoardStore {
       }
 
       if (fields.column !== undefined) {
-        task.column = this.requireColumn(data, fields.column);
+        task.column = this.requireColumn(fields.column);
         changed = true;
       }
 
@@ -675,6 +977,7 @@ export class BoardStore {
       }
 
       task.updatedAt = now();
+      this.writeTask(task);
       const event: BoardEvent =
         task.column === fromColumn
           ? { type: 'task_updated', task: clone(task) }
@@ -685,21 +988,23 @@ export class BoardStore {
   }
 
   deleteTask(id: string): void {
-    this.mutate((data) => {
-      this.findTask(data, id);
-      data.tasks = data.tasks.filter((task) => task.id !== id);
+    this.mutate(() => {
+      this.findTask(id);
+      this.deleteTaskRow.run(id);
+      this.deleteOrphanBlobs.run();
       return {
         result: undefined,
         events: [{ type: 'task_deleted', taskId: id }],
       };
     });
+    this.compact();
   }
 
   updateColumns(
     columns: Array<Partial<Column> & { name: string }>,
     moveTo?: string,
   ): Column[] {
-    return this.mutate((data) => {
+    return this.mutate(() => {
       if (!Array.isArray(columns) || columns.length === 0) {
         throw new BoardError(
           'INVALID_COLUMNS',
@@ -727,9 +1032,10 @@ export class BoardStore {
         );
       }
 
-      const byId = new Map(data.columns.map((column) => [column.id, column]));
+      const currentColumns = this.readColumns();
+      const byId = new Map(currentColumns.map((column) => [column.id, column]));
       const byName = new Map(
-        data.columns.map((column) => [column.name, column]),
+        currentColumns.map((column) => [column.name, column]),
       );
       const used = new Set<string>();
       const next: Column[] = [];
@@ -771,7 +1077,7 @@ export class BoardStore {
       }
 
       const oldNameById = new Map(
-        data.columns.map((column) => [column.id, column.name]),
+        currentColumns.map((column) => [column.id, column.name]),
       );
       const renames = new Map<string, string>();
       for (const column of next) {
@@ -782,21 +1088,23 @@ export class BoardStore {
       }
 
       const removedNames = new Set(
-        data.columns
+        currentColumns
           .filter((column) => !used.has(column.id))
           .map((column) => column.name),
       );
       const events: BoardEvent[] = [];
 
-      for (const task of data.tasks) {
+      for (const task of this.readTasks()) {
         const fromColumn = task.column;
         const target = removedNames.has(task.column)
           ? destination.name
           : renames.get(task.column);
 
         if (target !== undefined && target !== task.column) {
+          const updatedAt = now();
+          this.updateTaskColumn.run(target, updatedAt, task.id);
           task.column = target;
-          task.updatedAt = now();
+          task.updatedAt = updatedAt;
           events.push({
             type: 'task_moved',
             task: clone(task),
@@ -805,14 +1113,116 @@ export class BoardStore {
         }
       }
 
-      data.columns = next;
+      this.writeColumns(next);
       events.push({ type: 'columns_updated', columns: clone(next) });
       return { result: clone(next), events };
     });
   }
 
+  addAttachment(taskId: string, input: AttachmentInput): AttachmentMeta {
+    return this.mutate(() => {
+      this.findTask(taskId);
+      const size = input.data.length;
+      if (size === 0) {
+        throw new BoardError('INVALID_ATTACHMENT', 'The attachment is empty.');
+      }
+
+      if (size > LIMITS.attachmentSize) {
+        throw new BoardError(
+          'ATTACHMENT_TOO_LARGE',
+          `Images must not exceed ${Math.floor(
+            LIMITS.attachmentSize / 1024 / 1024,
+          )} MB.`,
+        );
+      }
+
+      const type: ImageType | undefined = detectImageType(input.data);
+      if (!type) {
+        throw new BoardError(
+          'INVALID_ATTACHMENT',
+          'Only PNG, JPEG, GIF and WebP images are supported.',
+        );
+      }
+
+      const sha256 = createHash('sha256').update(input.data).digest('hex');
+      const existing = this.selectAttachmentByHash.get(taskId, sha256) as
+        | AttachmentRow
+        | undefined;
+      if (existing) {
+        return { result: clone(toAttachment(existing)), events: [] };
+      }
+
+      const count = Number(this.countAttachments.get(taskId)?.count ?? 0);
+      if (count >= LIMITS.attachmentsPerTask) {
+        throw new BoardError(
+          'ATTACHMENT_LIMIT',
+          `A task can have at most ${LIMITS.attachmentsPerTask} images.`,
+        );
+      }
+
+      const id = uuidv4();
+      const createdAt = now();
+      const filename = sanitizeFilename(input.filename, type.extension);
+      this.insertBlob.run(sha256, type.mimeType, size, input.data, createdAt);
+      this.insertAttachment.run(id, taskId, sha256, filename, count, createdAt);
+
+      const attachments = this.readAttachments(taskId);
+      const meta = attachments.find((item) => item.id === id)!;
+      return {
+        result: clone(meta),
+        events: [
+          {
+            type: 'attachments_changed',
+            taskId,
+            attachments: clone(attachments),
+          },
+        ],
+      };
+    });
+  }
+
+  getAttachment(id: string): AttachmentContent | undefined {
+    return this.readTransaction(() => {
+      const row = this.selectAttachmentWithBlob.get(id) as
+        | AttachmentRowWithData
+        | undefined;
+      if (!row) return undefined;
+      return { meta: toAttachment(row), data: Uint8Array.from(row.data) };
+    });
+  }
+
+  deleteAttachment(id: string): void {
+    this.mutate(() => {
+      const row = this.selectAttachment.get(id) as AttachmentRow | undefined;
+      if (!row) {
+        throw new BoardError(
+          'ATTACHMENT_NOT_FOUND',
+          `Attachment with id "${id}" not found.`,
+        );
+      }
+
+      this.deleteAttachmentRow.run(id);
+      this.deleteOrphanBlobs.run();
+      const attachments = this.readAttachments(row.task_id);
+      return {
+        result: undefined,
+        events: [
+          {
+            type: 'attachments_changed',
+            taskId: row.task_id,
+            attachments,
+          },
+        ],
+      };
+    });
+    this.compact();
+  }
+
   dispose(): void {
-    this.stopWatching();
+    if (this.disposed) return;
+    this.disposed = true;
+    if (this.watchTimer) clearInterval(this.watchTimer);
     this.listeners = [];
+    this.database.close();
   }
 }

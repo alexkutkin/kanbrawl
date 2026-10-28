@@ -9,7 +9,11 @@ export type BoardErrorCode =
   | 'INVALID_PRIORITY'
   | 'CONFLICT'
   | 'BOARD_LOCKED'
-  | 'INVALID_BOARD_FILE';
+  | 'INVALID_BOARD_FILE'
+  | 'INVALID_ATTACHMENT'
+  | 'ATTACHMENT_NOT_FOUND'
+  | 'ATTACHMENT_TOO_LARGE'
+  | 'ATTACHMENT_LIMIT';
 
 export class BoardError extends Error {
   constructor(

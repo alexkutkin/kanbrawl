@@ -63,5 +63,7 @@ export function taskAction(title: string, options: TaskOptions): void {
     }
   } catch (error) {
     fail(error);
+  } finally {
+    store.dispose();
   }
 }

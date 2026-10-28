@@ -4,6 +4,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import process from 'node:process';
+import { DatabaseSync } from 'node:sqlite';
 import {
   CONTAINER_MODULE_ROOT,
   CONTAINER_ROOT,
@@ -24,7 +25,7 @@ const feature = process.argv[2];
 if (!feature) {
   fail(
     'usage: node .agents/skills/verify-kanbrawl/scripts/drive.mjs <feature>\n' +
-      '  features: board | tasks | drag-drop | task-detail | columns',
+      '  features: board | tasks | drag-drop | task-detail | columns | attachments',
   );
 }
 
@@ -104,7 +105,7 @@ if (!existsSync(reportFile)) {
 
 // Host-side proof that what the browser showed is also on disk.
 const report = JSON.parse(readFileSync(reportFile, 'utf8'));
-const stored = JSON.parse(readFileSync(instance.dataFile, 'utf8'));
+const stored = readStoredBoard(instance.dataFile);
 let board;
 try {
   board = await fetchBoard(instance.hostUrl);
@@ -122,24 +123,66 @@ function hostCheck(name, condition, detail) {
   }
 }
 
+function readStoredBoard(dataFile) {
+  const database = new DatabaseSync(dataFile);
+  try {
+    return {
+      columns: database
+        .prepare('SELECT name FROM columns ORDER BY position')
+        .all()
+        .map((row) => ({ name: row.name })),
+      tasks: database
+        .prepare('SELECT id, column_name FROM tasks')
+        .all()
+        .map((row) => ({ id: row.id, column: row.column_name })),
+      attachments: database
+        .prepare('SELECT id, task_id FROM attachments')
+        .all()
+        .map((row) => ({ id: row.id, taskId: row.task_id })),
+    };
+  } finally {
+    database.close();
+  }
+}
+
 const servedIds = board.tasks.map((task) => task.id).sort().join(',');
 const storedIds = stored.tasks.map((task) => task.id).sort().join(',');
 hostCheck(
-  'served board matches kanbrawl.json task ids',
+  'served board matches kanbrawl.db task ids',
   servedIds === storedIds,
   servedIds === storedIds ? undefined : 'served and stored task ids differ',
 );
 hostCheck(
-  'served columns match kanbrawl.json',
+  'served columns match kanbrawl.db',
   board.columns.map((column) => column.name).join('|') ===
     stored.columns.map((column) => column.name).join('|'),
 );
 const storedById = new Map(stored.tasks.map((task) => [task.id, task]));
 hostCheck(
-  'every task column persisted to kanbrawl.json',
+  'every task column persisted to kanbrawl.db',
   board.tasks.every((task) => storedById.get(task.id)?.column === task.column),
 );
-hostCheck('kanbrawl.json is valid JSON with a task array', Array.isArray(stored.tasks));
+const servedAttachments = board.tasks
+  .flatMap((task) => (task.attachments ?? []).map((item) => item.id))
+  .sort()
+  .join(',');
+const storedAttachments = stored.attachments
+  .map((item) => item.id)
+  .sort()
+  .join(',');
+hostCheck(
+  'served attachments match kanbrawl.db',
+  servedAttachments === storedAttachments,
+  servedAttachments === storedAttachments
+    ? undefined
+    : 'served and stored attachment ids differ',
+);
+hostCheck(
+  'kanbrawl.db holds columns, tasks and attachments tables',
+  Array.isArray(stored.tasks) &&
+    Array.isArray(stored.columns) &&
+    Array.isArray(stored.attachments),
+);
 
 report.hostChecks = hostChecks;
 report.evidenceDir = evidenceDir;

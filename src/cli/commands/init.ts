@@ -1,13 +1,13 @@
 import process from 'node:process';
-import { randomUUID } from 'node:crypto';
+import { resolve } from 'node:path';
 import { checkbox } from '@inquirer/prompts';
 import {
   MCP_TARGETS,
   ensureAgentsSection,
-  ensureBoardFile,
   writeMcpConfig,
   type McpTarget,
 } from '../../shared/onboarding.js';
+import { ensureBoardFile } from '../../server/store.js';
 
 export async function initAction(): Promise<void> {
   console.log('🥊 Kanbrawl Setup\n');
@@ -28,10 +28,10 @@ export async function initAction(): Promise<void> {
   const cwd = process.cwd();
 
   console.log('\n📋 Setting up board...');
-  if (ensureBoardFile(cwd, randomUUID) === 'exists') {
-    console.log('  ⏭️  kanbrawl.json already exists, skipping');
+  if (ensureBoardFile(resolve(cwd, 'kanbrawl.db')) === 'exists') {
+    console.log('  ⏭️  kanbrawl.db already exists, skipping');
   } else {
-    console.log('  ✅ kanbrawl.json');
+    console.log('  ✅ kanbrawl.db');
   }
 
   console.log('\n🔧 Writing MCP configuration...');

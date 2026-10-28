@@ -181,7 +181,7 @@ try {
     hostUrl: hostBaseUrl(port),
     containerUrl: containerBaseUrl(port),
     dataDir: DATA_DIR,
-    dataFile: join(DATA_DIR, 'kanbrawl.json'),
+    dataFile: join(DATA_DIR, 'kanbrawl.db'),
     logFile: LOG_FILE,
     container,
     startedAt: new Date().toISOString(),
@@ -189,7 +189,7 @@ try {
   writeInstance(instance);
 
   if (!existsSync(instance.dataFile)) {
-    throw new Error(`board file was not created at ${instance.dataFile}`);
+    throw new Error(`board database was not created at ${instance.dataFile}`);
   }
 
   const names = board.columns.map((column) => column.name).join(', ');
@@ -200,7 +200,7 @@ try {
   }
 
   ok(`Kanbrawl verify instance running on ${instance.hostUrl} (pid ${child.pid})`);
-  ok(`Board file: ${instance.dataFile}`);
+  ok(`Board database: ${instance.dataFile}`);
   ok(`Columns: ${names}`);
   ok(
     `${container.owned ? 'disposable' : 'reused'} sandbox: ${container.name}` +

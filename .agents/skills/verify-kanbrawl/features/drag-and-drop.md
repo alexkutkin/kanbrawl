@@ -22,7 +22,7 @@ Preconditions:
 - **Run the scenario.** Run `node .agents/skills/verify-kanbrawl/scripts/drive.mjs drag-drop`.
 - **Drag.** The runner performs a native drag from the card element to the `Done` column (`kanbrawl-column` host). The card leaves `Todo` and appears under `Done`; `GET /api/board` reports `column: "Done"`.
 - **Check the drop state.** The `Done` column no longer carries the `drag-over` class.
-- **Check persistence.** The host-side check confirms the served task and the entry in `.verify/run/data/kanbrawl.json` agree on the column.
+- **Check persistence.** The host-side check confirms the served task and the entry in `.verify/run/data/kanbrawl.db` agree on the column.
 - **Read the proof.** Exit code `0`, `✔ drag-drop: 2/2 checks passed`, `✔ drag-drop verified`, and `00-after-drag.png`.
 
 ## Gotchas
