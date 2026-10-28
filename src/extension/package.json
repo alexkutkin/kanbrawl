@@ -3,7 +3,7 @@
   "displayName": "Kanbrawl",
   "description": "Live kanban board for AI agents — sidebar view and MCP server for Copilot",
   "version": "1.0.0",
-  "publisher": "sinedied",
+  "publisher": "alexkutkin",
   "license": "MIT",
   "type": "commonjs",
   "engines": {

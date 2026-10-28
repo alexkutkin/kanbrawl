@@ -54,7 +54,7 @@ describe('onboarding', () => {
       expect(data.servers.kanbrawl).toEqual({
         type: 'stdio',
         command: 'npx',
-        args: ['-y', 'kanbrawl', 'start', '--stdio'],
+        args: ['-y', 'github:alexkutkin/kanbrawl', 'start', '--stdio'],
       });
     });
 
@@ -81,7 +81,7 @@ describe('onboarding', () => {
       expect(data.mcpServers.other).toEqual({ command: 'other-tool' });
       expect(data.mcpServers.kanbrawl).toEqual({
         command: 'npx',
-        args: ['-y', 'kanbrawl', 'start', '--stdio'],
+        args: ['-y', 'github:alexkutkin/kanbrawl', 'start', '--stdio'],
       });
     });
   });

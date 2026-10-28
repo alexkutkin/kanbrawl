@@ -8,7 +8,8 @@ export type McpTarget = {
   entry: Record<string, unknown>;
 };
 
-const STDIO_ARGS = ['-y', 'kanbrawl', 'start', '--stdio'];
+const PACKAGE_SPEC = 'github:alexkutkin/kanbrawl';
+const STDIO_ARGS = ['-y', PACKAGE_SPEC, 'start', '--stdio'];
 
 export const MCP_TARGETS: McpTarget[] = [
   {

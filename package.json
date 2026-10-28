@@ -7,11 +7,11 @@
   "author": "sinedied",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sinedied/kanbrawl.git"
+    "url": "git+https://github.com/alexkutkin/kanbrawl.git"
   },
-  "homepage": "https://github.com/sinedied/kanbrawl",
+  "homepage": "https://github.com/alexkutkin/kanbrawl",
   "bugs": {
-    "url": "https://github.com/sinedied/kanbrawl/issues"
+    "url": "https://github.com/alexkutkin/kanbrawl/issues"
   },
   "keywords": [
     "kanban",
@@ -34,6 +34,7 @@
     "build:server": "tsc -p tsconfig.build.json",
     "build:client": "vite build src/client",
     "build": "npm run build:server && npm run build:client",
+    "prepare": "node bin/prepare.mjs",
     "build:ext": "cd src/extension && npm install && node esbuild.mjs --production",
     "watch:ext": "cd src/extension && npm install && node esbuild.mjs --watch",
     "dev:server": "tsx watch bin/cli.js",

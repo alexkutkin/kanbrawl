@@ -105,12 +105,16 @@ async function startServer(context: vscode.ExtensionContext): Promise<boolean> {
   }
 
   return new Promise((resolve) => {
-    const proc = cp.spawn('npx', ['-y', 'kanbrawl', 'start'], {
-      cwd: root,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: true,
-      env: { ...process.env, PORT: String(serverPort) },
-    });
+    const proc = cp.spawn(
+      'npx',
+      ['-y', 'github:alexkutkin/kanbrawl', 'start'],
+      {
+        cwd: root,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        shell: true,
+        env: { ...process.env, PORT: String(serverPort) },
+      },
+    );
 
     serverProcess = proc;
 

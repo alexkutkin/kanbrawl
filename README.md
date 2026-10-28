@@ -4,8 +4,6 @@
 
 **A minimal live kanban board built for AI agents**
 
-[![Build](https://img.shields.io/github/actions/workflow/status/alexkutkin/kanbrawl/ci.yml?style=flat-square&label=build&logo=github)](https://github.com/alexkutkin/kanbrawl/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/kanbrawl?style=flat-square&logo=npm&logoColor=white&color=cb3837)](https://www.npmjs.com/package/kanbrawl)
 [![TypeScript](https://img.shields.io/badge/TypeScript-3178c6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![Node](https://img.shields.io/badge/Node.js-%3E%3D22-5fa04e?style=flat-square&logo=nodedotjs&logoColor=white)](https://nodejs.org)
 [![License](https://img.shields.io/badge/license-MIT-orange?style=flat-square)](LICENSE)
@@ -41,7 +39,7 @@ AI agents manage tasks on a kanban board through [MCP](https://modelcontextproto
 Run the interactive setup in your project directory:
 
 ```bash
-npx kanbrawl init
+npx github:alexkutkin/kanbrawl init
 ```
 
 This will:
@@ -57,7 +55,7 @@ That's it — your AI agent can now use MCP tools to manage tasks on the board.
 To launch the web UI and HTTP MCP server:
 
 ```bash
-npx kanbrawl start
+npx github:alexkutkin/kanbrawl start
 ```
 
 Open [http://localhost:8431](http://localhost:8431) to view the board. By default the server binds to loopback only; start it with `--host 0.0.0.0` to share the board on your local network. The board has no authentication, so anyone who can reach the port can view and edit it.
@@ -83,7 +81,7 @@ If you prefer to configure your MCP client manually instead of using `kanbrawl i
   "mcpServers": {
     "kanbrawl": {
       "command": "npx",
-      "args": ["-y", "kanbrawl", "start", "--stdio"]
+      "args": ["-y", "github:alexkutkin/kanbrawl", "start", "--stdio"]
     }
   }
 }

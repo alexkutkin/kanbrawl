@@ -5,7 +5,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "kanbrawl",
+        "github:alexkutkin/kanbrawl",
         "start",
         "--stdio"
       ]
