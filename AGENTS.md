@@ -2,6 +2,24 @@
 
 A minimal live kanban board for AI agents, powered by MCP (Model Context Protocol).
 
+## Working agreement
+
+### Communication
+
+- Communicate with the owner in Russian.
+- Keep everything the repository stores in English: code and comments, commit
+  messages, test names, README, docs, ADRs, AGENTS.md, config comments.
+- Content keeps its own language: product strings live in locale resources.
+
+### Git
+
+- Work directly on `main`. Create branches or pull requests only when requested.
+- Use focused Conventional Commits: `feat:`, `fix:`, `docs:`, `refactor:`, `chore:`.
+- Do not add AI co-authorship or tool credits to commits or pull requests.
+- Add `Signed-off-by` only when required.
+- Commit and push only when requested. Push to `origin/main` unless otherwise specified.
+- Do not force-push or rewrite published history without explicit approval.
+
 ## Overview
 
 - Express 5 server hosting MCP (Streamable HTTP), REST API, SSE, and static client

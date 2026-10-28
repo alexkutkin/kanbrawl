@@ -5,3 +5,5 @@ kanbrawl.json
 *.env*
 TODO
 .verify/
+.scratch/
+data/

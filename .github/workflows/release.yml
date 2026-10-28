@@ -31,5 +31,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
           # Need owner/admin account to bypass branch protection
-          GIT_COMMITTER_NAME: sinedied
-          GIT_COMMITTER_EMAIL: noda@free.fr
+          GIT_AUTHOR_NAME: Alex Kutkin
+          GIT_AUTHOR_EMAIL: 3887963+alexkutkin@users.noreply.github.com
+          GIT_COMMITTER_NAME: Alex Kutkin
+          GIT_COMMITTER_EMAIL: 3887963+alexkutkin@users.noreply.github.com

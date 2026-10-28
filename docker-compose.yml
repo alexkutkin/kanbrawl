@@ -9,6 +9,6 @@ services:
       PORT: "8431"
     volumes:
       - type: bind
-        source: "C:/DockerData/kanbrawl"
+        source: ./data
         target: /data
     restart: unless-stopped

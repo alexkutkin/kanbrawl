@@ -9,3 +9,6 @@ kanbrawl.json
 *.tsbuildinfo
 *.env*
 TODO
+.scratch
+.verify
+data

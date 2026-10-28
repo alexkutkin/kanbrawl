@@ -67,7 +67,7 @@ Open [http://localhost:8431](http://localhost:8431) to view the board. By defaul
 docker compose up --build -d
 ```
 
-The board is available at [http://localhost:8431](http://localhost:8431) and the MCP endpoint at `http://localhost:8431/mcp`. Board data is persisted in a host folder bind-mounted at `/data` (configured in `docker-compose.yml`).
+The board is available at [http://localhost:8431](http://localhost:8431) and the MCP endpoint at `http://localhost:8431/mcp`. Board data is persisted in the `./data` folder next to `docker-compose.yml`, bind-mounted at `/data`.
 
 The container listens on all interfaces and the board has no authentication. The published port is reachable by anyone who can connect to this machine. The server rejects browser requests whose `Origin` is not loopback, the same host, or listed via `--allow-origin`. If other devices cannot connect, allow inbound TCP port 8431 in the host firewall.
 
