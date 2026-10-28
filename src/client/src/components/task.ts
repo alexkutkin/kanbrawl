@@ -2,25 +2,28 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { Task } from '../types.js';
 
+type ResultCallbacks = {
+  resolve?: () => void;
+  reject?: (message: string) => void;
+};
+
 @customElement('kanbrawl-task')
 export class KanbrawlTask extends LitElement {
   @property({ type: Object }) task!: Task;
   @property({ type: Array }) allColumns: string[] = [];
+  @property({ type: Boolean }) stale = false;
   @state() private editing = false;
   @state() private editTitle = '';
   @state() private editDescription = '';
+  @state() private editPriority = 'P1';
+  @state() private editAssignee = '';
+  @state() private pending = false;
+  @state() private editError: string | undefined;
 
   static styles = css`
     :host {
       display: block;
       animation: slideIn 0.25s ease-out;
-      cursor: grab;
-      -webkit-user-select: none;
-      user-select: none;
-    }
-
-    :host(:active) {
-      cursor: grabbing;
     }
 
     :host(.dragging) {
@@ -42,8 +45,10 @@ export class KanbrawlTask extends LitElement {
       background: var(--bg-elevated);
       border: 1px solid var(--border-subtle);
       border-radius: 8px;
-      padding: 14px;
-      transition: all 0.2s ease;
+      padding: 12px 12px 10px;
+      transition:
+        border-color 0.2s ease,
+        background 0.2s ease;
       position: relative;
     }
 
@@ -52,8 +57,22 @@ export class KanbrawlTask extends LitElement {
       background: var(--bg-elevated-hover);
     }
 
-    .task-card:hover .task-actions {
-      opacity: 1;
+    .task-open {
+      display: block;
+      width: 100%;
+      padding: 0;
+      border: none;
+      background: none;
+      color: inherit;
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .task-open:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 4px;
+      border-radius: 4px;
     }
 
     .task-header {
@@ -65,28 +84,42 @@ export class KanbrawlTask extends LitElement {
 
     .priority-badge {
       font-family: 'Space Mono', monospace;
-      font-size: 10px;
+      font-size: 11px;
       font-weight: 700;
       padding: 2px 6px;
       border-radius: 4px;
       letter-spacing: 0.5px;
       flex-shrink: 0;
-      margin-top: 2px;
+      margin-top: 1px;
     }
 
     .priority-P0 {
       background: var(--priority-p0-bg, rgba(239, 68, 68, 0.15));
-      color: var(--priority-p0-text, #ef4444);
+      color: var(--priority-p0-text, #ff8585);
     }
 
     .priority-P1 {
       background: var(--priority-p1-bg, rgba(245, 158, 11, 0.15));
-      color: var(--priority-p1-text, #f59e0b);
+      color: var(--priority-p1-text, #fbbf24);
     }
 
     .priority-P2 {
-      background: var(--priority-p2-bg, rgba(107, 114, 128, 0.15));
-      color: var(--priority-p2-text, #6b7280);
+      background: var(--priority-p2-bg, rgba(107, 114, 128, 0.18));
+      color: var(--priority-p2-text, #a9b0bd);
+    }
+
+    .stale-badge {
+      margin-left: auto;
+      flex-shrink: 0;
+      font-family: 'Space Mono', monospace;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      color: var(--stale-text);
+      background: var(--stale-bg);
+      border-radius: 4px;
+      padding: 2px 6px;
     }
 
     .task-title {
@@ -111,25 +144,19 @@ export class KanbrawlTask extends LitElement {
       overflow: hidden;
     }
 
-    .task-meta {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-    }
-
     .task-meta-left {
       display: flex;
       align-items: center;
       gap: 8px;
       min-width: 0;
+      padding-right: 64px;
     }
 
     .task-time {
       font-family: 'Space Mono', monospace;
-      font-size: 10px;
+      font-size: 11px;
       color: var(--text-dimmed);
-      letter-spacing: 0.5px;
+      letter-spacing: 0.3px;
       flex-shrink: 0;
     }
 
@@ -142,15 +169,22 @@ export class KanbrawlTask extends LitElement {
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      max-width: 120px;
+      max-width: 140px;
     }
 
     .task-actions {
+      position: absolute;
+      right: 8px;
+      bottom: 8px;
       display: flex;
-      gap: 4px;
+      gap: 2px;
       opacity: 0;
       transition: opacity 0.15s ease;
-      flex-shrink: 0;
+    }
+
+    .task-card:hover .task-actions,
+    .task-card:focus-within .task-actions {
+      opacity: 1;
     }
 
     .action-btn {
@@ -158,16 +192,24 @@ export class KanbrawlTask extends LitElement {
       border: none;
       color: var(--text-muted);
       cursor: pointer;
-      padding: 4px 6px;
-      border-radius: 4px;
+      min-width: 28px;
+      min-height: 28px;
+      border-radius: 5px;
       font-size: 14px;
       line-height: 1;
-      transition: all 0.15s ease;
+      transition:
+        background 0.15s ease,
+        color 0.15s ease;
     }
 
     .action-btn:hover {
       background: var(--border-subtle);
-      color: var(--text-secondary);
+      color: var(--text-primary);
+    }
+
+    .action-btn:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 1px;
     }
 
     .action-btn.delete:hover {
@@ -180,6 +222,15 @@ export class KanbrawlTask extends LitElement {
       display: flex;
       flex-direction: column;
       gap: 8px;
+    }
+
+    .edit-form label {
+      font-family: 'Space Mono', monospace;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: var(--text-dimmed);
     }
 
     .edit-form input,
@@ -195,9 +246,7 @@ export class KanbrawlTask extends LitElement {
       font-size: 13px;
       outline: none;
       box-sizing: border-box;
-      transition:
-        border-color 0.2s ease,
-        background 0.3s ease;
+      transition: border-color 0.2s ease;
     }
 
     .edit-form input:focus,
@@ -208,7 +257,7 @@ export class KanbrawlTask extends LitElement {
 
     .edit-form textarea {
       resize: vertical;
-      min-height: 50px;
+      min-height: 60px;
     }
 
     .edit-form select {
@@ -222,6 +271,12 @@ export class KanbrawlTask extends LitElement {
 
     .edit-row > * {
       flex: 1;
+      min-width: 0;
+    }
+
+    .form-error {
+      font-size: 12px;
+      color: var(--error-text);
     }
 
     .edit-actions {
@@ -231,23 +286,29 @@ export class KanbrawlTask extends LitElement {
 
     .edit-actions button {
       flex: 1;
+      min-height: 32px;
       padding: 6px;
       border-radius: 4px;
       border: none;
       font-family: 'DM Sans', sans-serif;
-      font-size: 11px;
+      font-size: 12px;
       font-weight: 600;
       cursor: pointer;
-      transition: all 0.15s ease;
     }
 
     .btn-save {
       background: var(--accent);
-      color: #fff;
+      color: var(--on-accent);
     }
 
     .btn-save:hover {
       background: var(--accent-hover);
+    }
+
+    .btn-save:disabled {
+      background: var(--btn-disabled-bg);
+      color: var(--btn-disabled-text);
+      cursor: not-allowed;
     }
 
     .btn-edit-cancel {
@@ -259,28 +320,38 @@ export class KanbrawlTask extends LitElement {
       background: var(--btn-secondary-hover);
     }
 
-    @media (max-width: 600px) {
-      .task-card {
-        padding: 12px;
-      }
-
+    @media (pointer: coarse) {
       .task-actions {
         opacity: 1;
       }
 
       .action-btn {
-        padding: 8px 10px;
+        min-width: 36px;
+        min-height: 36px;
         font-size: 16px;
+      }
+    }
+
+    @media (max-width: 600px) {
+      .task-card {
+        padding: 12px;
       }
 
       .edit-row {
         flex-direction: column;
       }
     }
-  `;
 
-  @state() private editPriority = 'P1';
-  @state() private editAssignee = '';
+    @media (prefers-reduced-motion: reduce) {
+      :host {
+        animation: none;
+      }
+
+      .task-actions {
+        transition: none;
+      }
+    }
+  `;
 
   connectedCallback() {
     super.connectedCallback();
@@ -314,8 +385,7 @@ export class KanbrawlTask extends LitElement {
 
   private formatTime(iso: string): string {
     const date = new Date(iso);
-    const now = new Date();
-    const diff = now.getTime() - date.getTime();
+    const diff = Date.now() - date.getTime();
     const mins = Math.floor(diff / 60_000);
     if (mins < 1) return 'just now';
     if (mins < 60) return `${mins}m ago`;
@@ -325,9 +395,17 @@ export class KanbrawlTask extends LitElement {
     return `${days}d ago`;
   }
 
+  private formatFullTimestamp(iso: string): string {
+    return new Date(iso).toLocaleString(undefined, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    });
+  }
+
   private startEdit() {
     this.editing = true;
     this.draggable = false;
+    this.editError = undefined;
     this.editTitle = this.task.title;
     this.editDescription = this.task.description;
     this.editPriority = this.task.priority;
@@ -336,46 +414,58 @@ export class KanbrawlTask extends LitElement {
 
   private cancelEdit() {
     this.editing = false;
+    this.pending = false;
+    this.editError = undefined;
     this.draggable = true;
   }
 
   private saveEdit() {
-    if (!this.editTitle.trim()) return;
-    this.dispatchEvent(
-      new CustomEvent('update-task', {
-        detail: {
-          id: this.task.id,
-          title: this.editTitle.trim(),
-          description: this.editDescription.trim(),
-          priority: this.editPriority,
-          assignee: this.editAssignee.trim(),
-        },
-        bubbles: true,
-        composed: true,
-      }),
-    );
-    this.editing = false;
-    this.draggable = true;
-  }
-
-  private handleDelete() {
-    this.dispatchEvent(
-      new CustomEvent('delete-task', {
-        detail: { id: this.task.id },
-        bubbles: true,
-        composed: true,
-      }),
-    );
-  }
-
-  private handleViewTask(e: Event) {
-    // Don't open panel if clicking action buttons or in edit mode
-    const target = e.target as HTMLElement;
-    if (this.editing) return;
-    if (target.closest('.action-btn') ?? target.closest('.edit-form')) {
+    if (this.pending) return;
+    if (!this.editTitle.trim()) {
+      this.editError = 'Title is required.';
       return;
     }
 
+    this.pending = true;
+    this.editError = undefined;
+    const detail = {
+      id: this.task.id,
+      title: this.editTitle.trim(),
+      description: this.editDescription,
+      priority: this.editPriority,
+      assignee: this.editAssignee.trim(),
+      resolve: () => {
+        this.pending = false;
+        this.editing = false;
+        this.draggable = true;
+      },
+      reject: (message: string) => {
+        this.pending = false;
+        this.editError = message;
+      },
+    };
+
+    this.dispatchEvent(
+      new CustomEvent('update-task', {
+        detail,
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+
+  private requestDelete() {
+    this.dispatchEvent(
+      new CustomEvent('delete-task', {
+        detail: { id: this.task.id, title: this.task.title },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+
+  private handleViewTask() {
+    if (this.editing) return;
     this.dispatchEvent(
       new CustomEvent('view-task', {
         detail: { task: this.task },
@@ -385,8 +475,8 @@ export class KanbrawlTask extends LitElement {
     );
   }
 
-  private handleEditKeydown(e: KeyboardEvent) {
-    if (e.key === 'Enter' && !e.shiftKey) {
+  private handleInputKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter') {
       e.preventDefault();
       this.saveEdit();
     }
@@ -396,28 +486,45 @@ export class KanbrawlTask extends LitElement {
     }
   }
 
+  private handleFormKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') this.cancelEdit();
+  }
+
   render() {
     if (this.editing) {
       return html`
         <div class="task-card">
-          <div class="edit-form">
+          <form
+            class="edit-form"
+            @submit=${(e: Event) => {
+              e.preventDefault();
+              this.saveEdit();
+            }}
+            @keydown=${this.handleFormKeydown}
+          >
+            <label for="edit-title-${this.task.id}">Title</label>
             <input
+              id="edit-title-${this.task.id}"
               type="text"
+              maxlength="200"
               .value=${this.editTitle}
               @input=${(e: InputEvent) =>
                 (this.editTitle = (e.target as HTMLInputElement).value)}
-              @keydown=${this.handleEditKeydown}
+              @keydown=${this.handleInputKeydown}
             />
+            <label for="edit-description-${this.task.id}">Description</label>
             <textarea
+              id="edit-description-${this.task.id}"
+              maxlength="4000"
               .value=${this.editDescription}
               @input=${(e: InputEvent) =>
                 (this.editDescription = (
                   e.target as HTMLTextAreaElement
                 ).value)}
-              @keydown=${this.handleEditKeydown}
             ></textarea>
             <div class="edit-row">
               <select
+                aria-label="Priority"
                 .value=${this.editPriority}
                 @change=${(e: Event) =>
                   (this.editPriority = (e.target as HTMLSelectElement).value)}
@@ -428,38 +535,74 @@ export class KanbrawlTask extends LitElement {
               </select>
               <input
                 type="text"
+                maxlength="100"
+                aria-label="Assignee"
                 placeholder="Assignee (optional)"
                 .value=${this.editAssignee}
                 @input=${(e: InputEvent) =>
                   (this.editAssignee = (e.target as HTMLInputElement).value)}
-                @keydown=${this.handleEditKeydown}
+                @keydown=${this.handleInputKeydown}
               />
             </div>
+            ${this.editError
+              ? html`<div class="form-error" role="alert">
+                  ${this.editError}
+                </div>`
+              : nothing}
             <div class="edit-actions">
-              <button class="btn-save" @click=${this.saveEdit}>Save</button>
-              <button class="btn-edit-cancel" @click=${this.cancelEdit}>
+              <button
+                type="submit"
+                class="btn-save"
+                ?disabled=${this.pending || !this.editTitle.trim()}
+              >
+                ${this.pending ? 'Saving…' : 'Save'}
+              </button>
+              <button
+                type="button"
+                class="btn-edit-cancel"
+                ?disabled=${this.pending}
+                @click=${this.cancelEdit}
+              >
                 Cancel
               </button>
             </div>
-          </div>
+          </form>
         </div>
       `;
     }
 
     return html`
-      <div class="task-card" @click=${this.handleViewTask}>
-        <div class="task-header">
-          <span class="priority-badge priority-${this.task.priority}"
-            >${this.task.priority}</span
-          >
-          <div class="task-title">${this.task.title}</div>
-        </div>
-        ${this.task.description
-          ? html`<div class="task-description">${this.task.description}</div>`
-          : nothing}
-        <div class="task-meta">
-          <div class="task-meta-left">
-            <span class="task-time"
+      <div class="task-card">
+        <button
+          type="button"
+          class="task-open"
+          aria-label="Open task: ${this.task.title}"
+          @click=${this.handleViewTask}
+        >
+          <span class="task-header">
+            <span class="priority-badge priority-${this.task.priority}"
+              >${this.task.priority}</span
+            >
+            <span class="task-title">${this.task.title}</span>
+            ${this.stale
+              ? html`<span
+                  class="stale-badge"
+                  title="Last updated ${this.formatFullTimestamp(
+                    this.task.updatedAt,
+                  )}"
+                  >stale</span
+                >`
+              : nothing}
+          </span>
+          ${this.task.description
+            ? html`<span class="task-description"
+                >${this.task.description}</span
+              >`
+            : nothing}
+          <span class="task-meta-left">
+            <span
+              class="task-time"
+              title=${this.formatFullTimestamp(this.task.updatedAt)}
               >${this.formatTime(this.task.updatedAt)}</span
             >
             ${this.task.assignee
@@ -467,19 +610,25 @@ export class KanbrawlTask extends LitElement {
                   >${this.task.assignee}</span
                 >`
               : nothing}
-          </div>
-          <div class="task-actions">
-            <button class="action-btn" title="Edit" @click=${this.startEdit}>
-              ✎
-            </button>
-            <button
-              class="action-btn delete"
-              title="Delete"
-              @click=${this.handleDelete}
-            >
-              ✕
-            </button>
-          </div>
+          </span>
+        </button>
+        <div class="task-actions">
+          <button
+            class="action-btn"
+            title="Edit"
+            aria-label="Edit ${this.task.title}"
+            @click=${this.startEdit}
+          >
+            ✎
+          </button>
+          <button
+            class="action-btn delete"
+            title="Delete"
+            aria-label="Delete ${this.task.title}"
+            @click=${this.requestDelete}
+          >
+            ✕
+          </button>
         </div>
       </div>
     `;

@@ -1,12 +1,27 @@
-import { LitElement, html, css } from 'lit';
+import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
-import type { Column, SortBy, SortOrder } from '../types.js';
+import type { Column, SortBy, SortOrder, Task } from '../types.js';
+
+// `crypto.randomUUID` is secure-context only, and the board is served over
+// plain HTTP on the LAN. The draft id just needs to be unique within the
+// dialog; the server assigns the real one when the column is saved.
+function createColumnId(): string {
+  if (typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+
+  return `column-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 @customElement('kanbrawl-column-settings')
 export class KanbrawlColumnSettings extends LitElement {
   @property({ type: Array }) columns: Column[] = [];
+  @property({ type: Array }) tasks: Task[] = [];
   @state() private editColumns: Column[] = [];
   @state() private open = false;
+  @state() private pending = false;
+  @state() private error: string | undefined;
+  @state() private moveTo = '';
 
   static styles = css`
     :host {
@@ -19,8 +34,8 @@ export class KanbrawlColumnSettings extends LitElement {
       color: var(--text-secondary);
       cursor: pointer;
       padding: 0;
-      width: 30px;
-      height: 30px;
+      width: 32px;
+      height: 32px;
       border-radius: 6px;
       font-size: 16px;
       line-height: 1;
@@ -36,37 +51,30 @@ export class KanbrawlColumnSettings extends LitElement {
       background: var(--accent-bg);
     }
 
-    .overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(0, 0, 0, 0.5);
-      z-index: 1000;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      animation: fadeIn 0.15s ease;
+    .settings-btn:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
     }
 
-    @keyframes fadeIn {
-      from {
-        opacity: 0;
-      }
-      to {
-        opacity: 1;
-      }
-    }
-
-    .modal {
-      background: var(--bg-surface);
+    dialog.modal {
+      width: 420px;
+      max-width: calc(100vw - 32px);
+      max-height: calc(100dvh - 64px);
+      padding: 20px;
       border: 1px solid var(--border-default);
       border-radius: 12px;
-      padding: 20px;
-      width: 360px;
-      max-width: calc(100vw - 32px);
-      max-height: calc(100vh - 64px);
-      overflow-y: auto;
+      background: var(--bg-surface);
+      color: var(--text-primary);
       box-shadow: 0 8px 30px var(--shadow);
+      overflow-y: auto;
+    }
+
+    dialog.modal[open] {
       animation: slideUp 0.2s ease;
+    }
+
+    dialog.modal::backdrop {
+      background: rgba(4, 4, 10, 0.62);
     }
 
     @keyframes slideUp {
@@ -87,6 +95,13 @@ export class KanbrawlColumnSettings extends LitElement {
       text-transform: uppercase;
       letter-spacing: 2px;
       color: var(--text-secondary);
+      margin: 0 0 8px;
+    }
+
+    .modal-hint {
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--text-muted);
       margin: 0 0 16px;
     }
 
@@ -105,6 +120,7 @@ export class KanbrawlColumnSettings extends LitElement {
 
     .column-row input {
       flex: 1;
+      min-width: 0;
       padding: 8px 10px;
       background: var(--bg-input);
       border: 1px solid var(--border-input);
@@ -121,25 +137,13 @@ export class KanbrawlColumnSettings extends LitElement {
       border-color: var(--accent);
     }
 
-    .drag-handle {
-      cursor: grab;
-      color: var(--text-dimmed);
-      font-size: 14px;
-      user-select: none;
-      padding: 4px;
-      flex-shrink: 0;
-    }
-
-    .drag-handle:active {
-      cursor: grabbing;
-    }
-
     .remove-btn {
       background: none;
       border: none;
       color: var(--text-dimmed);
       cursor: pointer;
-      padding: 4px 6px;
+      min-width: 32px;
+      min-height: 32px;
       border-radius: 4px;
       font-size: 14px;
       line-height: 1;
@@ -153,7 +157,7 @@ export class KanbrawlColumnSettings extends LitElement {
     }
 
     .remove-btn:disabled {
-      opacity: 0.3;
+      opacity: 0.35;
       cursor: not-allowed;
     }
 
@@ -164,6 +168,7 @@ export class KanbrawlColumnSettings extends LitElement {
 
     .add-column-btn {
       width: 100%;
+      min-height: 36px;
       padding: 8px;
       background: transparent;
       border: 1px dashed var(--border-input);
@@ -182,6 +187,36 @@ export class KanbrawlColumnSettings extends LitElement {
       background: var(--accent-bg);
     }
 
+    .move-note {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      font-size: 12px;
+      color: var(--text-secondary);
+      background: var(--bg-input);
+      border: 1px solid var(--border-input);
+      border-radius: 6px;
+      padding: 8px 10px;
+      margin-bottom: 12px;
+    }
+
+    .move-note select {
+      padding: 4px 6px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-input);
+      border-radius: 5px;
+      color: var(--text-primary);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 12px;
+    }
+
+    .form-error {
+      font-size: 12px;
+      color: var(--error-text);
+      margin-bottom: 12px;
+    }
+
     .modal-actions {
       display: flex;
       gap: 8px;
@@ -189,6 +224,7 @@ export class KanbrawlColumnSettings extends LitElement {
 
     .modal-actions button {
       flex: 1;
+      min-height: 36px;
       padding: 8px;
       border-radius: 6px;
       border: none;
@@ -201,7 +237,7 @@ export class KanbrawlColumnSettings extends LitElement {
 
     .btn-save {
       background: var(--accent);
-      color: #fff;
+      color: var(--on-accent);
     }
 
     .btn-save:hover {
@@ -235,7 +271,9 @@ export class KanbrawlColumnSettings extends LitElement {
       border: none;
       color: var(--text-dimmed);
       cursor: pointer;
-      padding: 0 4px;
+      min-width: 24px;
+      min-height: 24px;
+      padding: 0;
       font-size: 10px;
       line-height: 1;
       transition: color 0.15s ease;
@@ -246,23 +284,20 @@ export class KanbrawlColumnSettings extends LitElement {
     }
 
     .move-btn:disabled {
-      opacity: 0.2;
+      opacity: 0.25;
       cursor: not-allowed;
-    }
-
-    .move-btn:disabled:hover {
-      color: var(--text-dimmed);
     }
 
     .sort-row {
       display: flex;
       gap: 6px;
-      padding: 0 0 0 30px;
+      padding: 0 0 0 32px;
       margin-top: -4px;
     }
 
     .sort-row select {
       flex: 1;
+      min-width: 0;
       padding: 5px 8px;
       background: var(--bg-input);
       border: 1px solid var(--border-input);
@@ -281,52 +316,106 @@ export class KanbrawlColumnSettings extends LitElement {
     }
 
     .sort-label {
-      font-size: 10px;
+      font-size: 11px;
       color: var(--text-dimmed);
       font-family: 'Space Mono', monospace;
       letter-spacing: 0.5px;
       align-self: center;
       flex-shrink: 0;
     }
+
+    @media (prefers-reduced-motion: reduce) {
+      dialog.modal[open] {
+        animation: none;
+      }
+
+      .settings-btn {
+        transition: none;
+      }
+    }
   `;
+
+  private get dialog(): HTMLDialogElement | undefined {
+    return (
+      this.renderRoot.querySelector<HTMLDialogElement>('dialog.modal') ??
+      undefined
+    );
+  }
 
   show() {
     this.editColumns = structuredClone(this.columns);
+    this.pending = false;
+    this.error = undefined;
+    this.moveTo = '';
     this.open = true;
+    void this.focusDialog();
+  }
+
+  private async focusDialog() {
+    await this.updateComplete;
+    const { dialog } = this;
+    if (dialog && !dialog.open) dialog.showModal();
+    this.shadowRoot
+      ?.querySelector<HTMLInputElement>('.column-row input')
+      ?.focus();
   }
 
   private close() {
-    this.open = false;
-  }
-
-  private handleOverlayClick(e: MouseEvent) {
-    if ((e.target as HTMLElement).classList.contains('overlay')) {
-      this.close();
+    if (this.pending) return;
+    const { dialog } = this;
+    if (dialog?.open) {
+      dialog.close();
+    } else {
+      this.open = false;
     }
   }
 
+  private handleDialogClose() {
+    this.open = false;
+    this.pending = false;
+    this.error = undefined;
+  }
+
+  private handleDialogClick(e: MouseEvent) {
+    const dialog = e.currentTarget as HTMLDialogElement;
+    if (e.target !== dialog) return;
+
+    const rect = dialog.getBoundingClientRect();
+    const inside =
+      e.clientX >= rect.left &&
+      e.clientX <= rect.right &&
+      e.clientY >= rect.top &&
+      e.clientY <= rect.bottom;
+    if (!inside) this.close();
+  }
+
   private updateColumnName(index: number, value: string) {
-    this.editColumns = this.editColumns.map((c, index_) =>
-      index_ === index ? { ...c, name: value } : c,
+    this.editColumns = this.editColumns.map((column, index_) =>
+      index_ === index ? { ...column, name: value } : column,
     );
   }
 
   private updateSortBy(index: number, value: SortBy) {
-    this.editColumns = this.editColumns.map((c, index_) =>
-      index_ === index ? { ...c, sortBy: value } : c,
+    this.editColumns = this.editColumns.map((column, index_) =>
+      index_ === index ? { ...column, sortBy: value } : column,
     );
   }
 
   private updateSortOrder(index: number, value: SortOrder) {
-    this.editColumns = this.editColumns.map((c, index_) =>
-      index_ === index ? { ...c, sortOrder: value } : c,
+    this.editColumns = this.editColumns.map((column, index_) =>
+      index_ === index ? { ...column, sortOrder: value } : column,
     );
   }
 
   private async addColumn() {
     this.editColumns = [
       ...this.editColumns,
-      { name: '', sortBy: 'created', sortOrder: 'asc' },
+      {
+        id: createColumnId(),
+        name: '',
+        sortBy: 'created',
+        sortOrder: 'asc',
+      },
     ];
     await this.updateComplete;
     const inputs =
@@ -336,43 +425,105 @@ export class KanbrawlColumnSettings extends LitElement {
 
   private removeColumn(index: number) {
     this.editColumns = this.editColumns.filter((_, index_) => index_ !== index);
+    this.syncMoveTo();
   }
 
   private moveColumn(index: number, direction: -1 | 1) {
     const target = index + direction;
     if (target < 0 || target >= this.editColumns.length) return;
-    const cols = [...this.editColumns];
-    [cols[index], cols[target]] = [cols[target], cols[index]];
-    this.editColumns = cols;
+    const columns = [...this.editColumns];
+    [columns[index], columns[target]] = [columns[target], columns[index]];
+    this.editColumns = columns;
+  }
+
+  private get removedColumns(): Array<{ column: Column; count: number }> {
+    const keptIds = new Set(this.editColumns.map((column) => column.id));
+    return this.columns
+      .filter((column) => !keptIds.has(column.id))
+      .map((column) => ({
+        column,
+        count: this.tasks.filter((task) => task.column === column.name).length,
+      }))
+      .filter((entry) => entry.count > 0);
+  }
+
+  private syncMoveTo() {
+    const candidates = this.editColumns.filter(
+      (column) => column.name.trim().length > 0,
+    );
+    if (!candidates.some((column) => column.name === this.moveTo)) {
+      this.moveTo = candidates[0]?.name ?? '';
+    }
   }
 
   private get isValid(): boolean {
     const trimmed = this.editColumns
-      .map((c) => c.name.trim())
-      .filter((c) => c.length > 0);
+      .map((column) => column.name.trim())
+      .filter((name) => name.length > 0);
     if (trimmed.length === 0) return false;
-    // Check for duplicates
     return new Set(trimmed).size === trimmed.length;
   }
 
   private save() {
-    if (!this.isValid) return;
+    if (this.pending || !this.isValid) return;
+    this.syncMoveTo();
+
     const columns = this.editColumns
-      .filter((c) => c.name.trim().length > 0)
-      .map((c) => ({ ...c, name: c.name.trim() }));
+      .filter((column) => column.name.trim().length > 0)
+      .map((column) => ({ ...column, name: column.name.trim() }));
+    const moveTo = this.removedColumns.length > 0 ? this.moveTo : undefined;
+
+    this.pending = true;
+    this.error = undefined;
     this.dispatchEvent(
       new CustomEvent('update-columns', {
-        detail: { columns },
+        detail: {
+          columns,
+          moveTo,
+          resolve: () => {
+            this.pending = false;
+            const { dialog } = this;
+            if (dialog?.open) dialog.close();
+            else this.open = false;
+          },
+          reject: (message: string) => {
+            this.pending = false;
+            this.error = message;
+          },
+        },
         bubbles: true,
         composed: true,
       }),
     );
-    this.close();
   }
 
-  private handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') this.close();
-    if (e.key === 'Enter') this.save();
+  private renderMoveNote() {
+    const removed = this.removedColumns;
+    if (removed.length === 0) return nothing;
+    const total = removed.reduce((sum, entry) => sum + entry.count, 0);
+    return html`
+      <div class="move-note">
+        <span
+          >${total} ${total === 1 ? 'task' : 'tasks'} from removed
+          ${removed.map((entry) => entry.column.name).join(', ')} will move
+          to</span
+        >
+        <select
+          aria-label="Destination column for tasks from removed columns"
+          .value=${this.moveTo}
+          @change=${(e: Event) => {
+            this.moveTo = (e.target as HTMLSelectElement).value;
+          }}
+        >
+          ${this.editColumns
+            .filter((column) => column.name.trim().length > 0)
+            .map(
+              (column) =>
+                html`<option value=${column.name}>${column.name}</option>`,
+            )}
+        </select>
+      </div>
+    `;
   }
 
   render() {
@@ -380,114 +531,147 @@ export class KanbrawlColumnSettings extends LitElement {
       <button
         class="settings-btn"
         title="Configure columns"
+        aria-label="Configure columns"
         @click=${this.show}
       >
         ⚙
       </button>
       ${this.open
         ? html`
-            <div class="overlay" @click=${this.handleOverlayClick}>
-              <div class="modal" @keydown=${this.handleKeydown}>
-                <h2 class="modal-title">Columns</h2>
-                <div class="column-list">
-                  ${this.editColumns.map(
-                    (col, index) => html`
-                      <div class="column-row">
-                        <div class="move-btns">
-                          <button
-                            class="move-btn"
-                            ?disabled=${index === 0}
-                            @click=${() => {
-                              this.moveColumn(index, -1);
-                            }}
-                            title="Move up"
-                          >
-                            ▲
-                          </button>
-                          <button
-                            class="move-btn"
-                            ?disabled=${index === this.editColumns.length - 1}
-                            @click=${() => {
-                              this.moveColumn(index, 1);
-                            }}
-                            title="Move down"
-                          >
-                            ▼
-                          </button>
-                        </div>
-                        <input
-                          type="text"
-                          .value=${col.name}
-                          placeholder="Column name"
-                          @input=${(e: InputEvent) => {
-                            this.updateColumnName(
-                              index,
-                              (e.target as HTMLInputElement).value,
-                            );
-                          }}
-                        />
+            <dialog
+              class="modal"
+              aria-labelledby="columns-dialog-title"
+              @click=${this.handleDialogClick}
+              @close=${this.handleDialogClose}
+              @cancel=${(e: Event) => {
+                if (this.pending) e.preventDefault();
+              }}
+            >
+              <h2 class="modal-title" id="columns-dialog-title">Columns</h2>
+              <p class="modal-hint">
+                Agents refer to columns by name. Renaming a column changes the
+                name they must use; tasks stay where they are.
+              </p>
+              <div class="column-list">
+                ${this.editColumns.map(
+                  (column, index) => html`
+                    <div class="column-row">
+                      <div class="move-btns">
                         <button
-                          class="remove-btn"
-                          ?disabled=${this.editColumns.length <= 1}
+                          class="move-btn"
+                          ?disabled=${index === 0 || this.pending}
                           @click=${() => {
-                            this.removeColumn(index);
+                            this.moveColumn(index, -1);
                           }}
-                          title="Remove column"
+                          title="Move up"
+                          aria-label="Move ${column.name || 'column'} up"
                         >
-                          ✕
+                          ▲
+                        </button>
+                        <button
+                          class="move-btn"
+                          ?disabled=${index === this.editColumns.length - 1 ||
+                          this.pending}
+                          @click=${() => {
+                            this.moveColumn(index, 1);
+                          }}
+                          title="Move down"
+                          aria-label="Move ${column.name || 'column'} down"
+                        >
+                          ▼
                         </button>
                       </div>
-                      <div class="sort-row">
-                        <span class="sort-label">Sort</span>
-                        <select
-                          .value=${col.sortBy}
-                          @change=${(e: Event) => {
-                            this.updateSortBy(
-                              index,
-                              (e.target as HTMLSelectElement).value as SortBy,
-                            );
-                          }}
-                        >
-                          <option value="priority">Priority</option>
-                          <option value="created">Created</option>
-                          <option value="updated">Updated</option>
-                        </select>
-                        <select
-                          .value=${col.sortOrder}
-                          @change=${(e: Event) => {
-                            this.updateSortOrder(
-                              index,
-                              (e.target as HTMLSelectElement)
-                                .value as SortOrder,
-                            );
-                          }}
-                        >
-                          <option value="asc">Ascending</option>
-                          <option value="desc">Descending</option>
-                        </select>
-                      </div>
-                    `,
-                  )}
-                </div>
-                <button class="add-column-btn" @click=${this.addColumn}>
-                  + Add column
-                </button>
-                <div class="modal-actions">
-                  <button
-                    class="btn-save"
-                    ?disabled=${!this.isValid}
-                    @click=${this.save}
-                  >
-                    Save
-                  </button>
-                  <button class="btn-cancel" @click=${this.close}>
-                    Cancel
-                  </button>
-                </div>
+                      <input
+                        type="text"
+                        .value=${column.name}
+                        placeholder="Column name"
+                        aria-label="Column name"
+                        ?disabled=${this.pending}
+                        @input=${(e: InputEvent) => {
+                          this.updateColumnName(
+                            index,
+                            (e.target as HTMLInputElement).value,
+                          );
+                        }}
+                      />
+                      <button
+                        class="remove-btn"
+                        ?disabled=${this.editColumns.length <= 1 ||
+                        this.pending}
+                        @click=${() => {
+                          this.removeColumn(index);
+                        }}
+                        title="Remove column"
+                        aria-label="Remove ${column.name || 'column'}"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    <div class="sort-row">
+                      <span class="sort-label">Sort</span>
+                      <select
+                        .value=${column.sortBy}
+                        ?disabled=${this.pending}
+                        aria-label="Sort field for ${column.name || 'column'}"
+                        @change=${(e: Event) => {
+                          this.updateSortBy(
+                            index,
+                            (e.target as HTMLSelectElement).value as SortBy,
+                          );
+                        }}
+                      >
+                        <option value="priority">Priority</option>
+                        <option value="created">Created</option>
+                        <option value="updated">Updated</option>
+                      </select>
+                      <select
+                        .value=${column.sortOrder}
+                        ?disabled=${this.pending}
+                        aria-label="Sort order for ${column.name || 'column'}"
+                        @change=${(e: Event) => {
+                          this.updateSortOrder(
+                            index,
+                            (e.target as HTMLSelectElement).value as SortOrder,
+                          );
+                        }}
+                      >
+                        <option value="asc">Ascending</option>
+                        <option value="desc">Descending</option>
+                      </select>
+                    </div>
+                  `,
+                )}
               </div>
-            </div>
+              <button
+                class="add-column-btn"
+                ?disabled=${this.pending}
+                @click=${this.addColumn}
+              >
+                + Add column
+              </button>
+              ${this.renderMoveNote()}
+              ${this.error
+                ? html`<div class="form-error" role="alert">${this.error}</div>`
+                : nothing}
+              <div class="modal-actions">
+                <button
+                  class="btn-save"
+                  ?disabled=${!this.isValid || this.pending}
+                  @click=${this.save}
+                >
+                  ${this.pending ? 'Saving…' : 'Save'}
+                </button>
+                <button
+                  class="btn-cancel"
+                  ?disabled=${this.pending}
+                  @click=${this.close}
+                >
+                  Cancel
+                </button>
+              </div>
+            </dialog>
           `
-        : null}
+        : nothing}
     `;
   }
 }

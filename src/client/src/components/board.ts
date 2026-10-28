@@ -2,16 +2,18 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import type { Task, Column } from '../types.js';
 
+const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
+
 @customElement('kanbrawl-board')
 export class KanbrawlBoard extends LitElement {
   @property({ type: Array }) columns: Column[] = [];
   @property({ type: Array }) tasks: Task[] = [];
 
   // Touch drag state (non-reactive, internal coordination only)
-  private _touchDragId: string | undefined = null;
-  private _touchTargetColumn: string | undefined = null;
-  private _touchTimer: number | undefined = null;
-  private _touchGhost: HTMLElement | undefined = null;
+  private _touchDragId: string | undefined;
+  private _touchTargetColumn: string | undefined;
+  private _touchTimer: ReturnType<typeof setTimeout> | undefined;
+  private _touchGhost: HTMLElement | undefined;
   private _touchStartX = 0;
   private _touchStartY = 0;
 
@@ -30,12 +32,13 @@ export class KanbrawlBoard extends LitElement {
       gap: 12px;
       height: 100%;
       min-width: min-content;
+      justify-content: center;
     }
 
     kanbrawl-column {
-      flex: 1;
-      min-width: 280px;
-      max-width: 380px;
+      flex: 1 1 380px;
+      min-width: 300px;
+      max-width: 480px;
       height: 100%;
     }
 
@@ -50,7 +53,7 @@ export class KanbrawlBoard extends LitElement {
       z-index: 9999;
       padding: 10px 16px;
       background: var(--accent);
-      color: #fff;
+      color: var(--on-accent);
       border-radius: 8px;
       font-family: 'DM Sans', sans-serif;
       font-size: 13px;
@@ -61,13 +64,13 @@ export class KanbrawlBoard extends LitElement {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+      box-shadow: 0 4px 20px var(--shadow);
       transform: scale(1.05);
     }
 
     @media (max-width: 768px) {
       kanbrawl-column {
-        min-width: 240px;
+        min-width: 260px;
       }
     }
 
@@ -96,6 +99,12 @@ export class KanbrawlBoard extends LitElement {
         max-width: none;
       }
     }
+
+    @media (prefers-reduced-motion: reduce) {
+      .touch-ghost {
+        transform: none;
+      }
+    }
   `;
 
   connectedCallback() {
@@ -118,7 +127,8 @@ export class KanbrawlBoard extends LitElement {
   private readonly _onTouchStart = (e: TouchEvent) => {
     const path = e.composedPath();
 
-    // Don't initiate drag on interactive elements
+    // Don't initiate drag on form controls or action buttons. The card body
+    // itself is a button (it opens the detail dialog), so it stays draggable.
     if (
       path.some(
         (element) =>
@@ -126,7 +136,9 @@ export class KanbrawlBoard extends LitElement {
           (element.tagName === 'INPUT' ||
             element.tagName === 'TEXTAREA' ||
             element.tagName === 'SELECT' ||
-            element.tagName === 'BUTTON' ||
+            element.classList.contains('action-btn') ||
+            element.classList.contains('add-btn') ||
+            element.classList.contains('fold-btn') ||
             element.classList.contains('edit-form') ||
             element.classList.contains('add-form')),
       )
@@ -145,7 +157,7 @@ export class KanbrawlBoard extends LitElement {
     this._touchStartY = touch.clientY;
 
     this._touchTimer = globalThis.setTimeout(() => {
-      const taskId = (taskElement as any).task?.id as string | undefined;
+      const taskId = (taskElement as { task?: Task }).task?.id;
       if (!taskId) return;
       this._startTouchDrag(taskId, touch.clientX, touch.clientY);
     }, 300);
@@ -163,19 +175,18 @@ export class KanbrawlBoard extends LitElement {
     this.shadowRoot!.append(ghost);
     this._touchGhost = ghost;
 
-    // Haptic feedback
     navigator.vibrate?.(50);
   }
 
   private readonly _onTouchMove = (e: TouchEvent) => {
     // Cancel long-press if finger moved before timer fired
-    if (this._touchTimer !== null && !this._touchDragId) {
+    if (this._touchTimer !== undefined && !this._touchDragId) {
       const touch = e.touches[0];
       const dx = Math.abs(touch.clientX - this._touchStartX);
       const dy = Math.abs(touch.clientY - this._touchStartY);
       if (dx > 10 || dy > 10) {
         clearTimeout(this._touchTimer);
-        this._touchTimer = null;
+        this._touchTimer = undefined;
       }
 
       return;
@@ -186,35 +197,32 @@ export class KanbrawlBoard extends LitElement {
 
     const touch = e.touches[0];
 
-    // Move ghost
     if (this._touchGhost) {
       this._touchGhost.style.left = `${touch.clientX - 40}px`;
       this._touchGhost.style.top = `${touch.clientY - 20}px`;
     }
 
-    // Detect target column
     const columns = this.shadowRoot!.querySelectorAll('kanbrawl-column');
-    let foundColumn: string | undefined = null;
-    for (const col of columns) {
-      const rect = col.getBoundingClientRect();
+    let foundColumn: string | undefined;
+    for (const column of columns) {
+      const rect = column.getBoundingClientRect();
       if (
         touch.clientX >= rect.left &&
         touch.clientX <= rect.right &&
         touch.clientY >= rect.top &&
         touch.clientY <= rect.bottom
       ) {
-        foundColumn = (col as any).name as string;
+        foundColumn = (column as { name?: string }).name;
         break;
       }
     }
 
-    // Update column highlights
     if (foundColumn !== this._touchTargetColumn) {
-      for (const col of columns) {
-        if ((col as any).name === foundColumn) {
-          col.classList.add('drag-over');
+      for (const column of columns) {
+        if ((column as { name?: string }).name === foundColumn) {
+          column.classList.add('drag-over');
         } else {
-          col.classList.remove('drag-over');
+          column.classList.remove('drag-over');
         }
       }
 
@@ -223,9 +231,9 @@ export class KanbrawlBoard extends LitElement {
   };
 
   private readonly _onTouchEnd = () => {
-    if (this._touchTimer !== null) {
+    if (this._touchTimer !== undefined) {
       clearTimeout(this._touchTimer);
-      this._touchTimer = null;
+      this._touchTimer = undefined;
     }
 
     if (this._touchDragId && this._touchTargetColumn) {
@@ -245,25 +253,38 @@ export class KanbrawlBoard extends LitElement {
   };
 
   private _cleanupTouchDrag() {
-    if (this._touchTimer !== null) {
+    if (this._touchTimer !== undefined) {
       clearTimeout(this._touchTimer);
-      this._touchTimer = null;
+      this._touchTimer = undefined;
     }
 
     if (this._touchGhost) {
       this._touchGhost.remove();
-      this._touchGhost = null;
+      this._touchGhost = undefined;
     }
 
-    for (const col of this.shadowRoot?.querySelectorAll('kanbrawl-column') ??
+    for (const column of this.shadowRoot?.querySelectorAll('kanbrawl-column') ??
       [])
-      col.classList.remove('drag-over');
-    this._touchDragId = null;
-    this._touchTargetColumn = null;
+      column.classList.remove('drag-over');
+    this._touchDragId = undefined;
+    this._touchTargetColumn = undefined;
+  }
+
+  private isStale(task: Task): boolean {
+    const index = this.columns.findIndex(
+      (column) => column.name === task.column,
+    );
+    if (index <= 0 || index >= this.columns.length - 1) return false;
+    const updated = new Date(task.updatedAt).getTime();
+    return Number.isFinite(updated) && Date.now() - updated > STALE_AFTER_MS;
   }
 
   render() {
     const columnNames = this.columns.map((c) => c.name);
+    const staleIds = new Set(
+      this.tasks.filter((task) => this.isStale(task)).map((task) => task.id),
+    );
+
     return html`
       <div class="board">
         ${this.columns.map(
@@ -274,6 +295,7 @@ export class KanbrawlBoard extends LitElement {
               .allColumns=${columnNames}
               .sortBy=${column.sortBy}
               .sortOrder=${column.sortOrder}
+              .staleIds=${staleIds}
             ></kanbrawl-column>
           `,
         )}
