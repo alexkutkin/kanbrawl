@@ -14,7 +14,8 @@ Clicking a card opens a native modal dialog with the full description, priority,
 
 - Click a card body (not its edit/delete buttons) to open the centered dialog.
 - Press `Escape`, choose the `✕` button, or click outside the dialog to close it.
-- From the dialog: `Copy ID`, the `Move to` select, `Edit`, and `Delete` (which opens a confirmation dialog).
+- From the dialog: `Copy ID`, the `Move to` select, `Edit` (the same dialog switches to edit mode), and `Delete` (which opens a confirmation dialog).
+- The card pencil opens this dialog directly in edit mode; create mode uses the same shell from `+ Add task`.
 
 ## Driving it with drive.mjs
 
@@ -33,7 +34,8 @@ Preconditions:
 
 ## Gotchas
 
-- Clicking the edit or delete action button does not open the dialog; the card handler ignores those targets. Click the card body.
+- Clicking the delete action button does not open the dialog; click the card body. The pencil does open the dialog, in edit mode, and also sets `#task/<id>`.
+- Edit and create reuse the dialog's main column: `Save` returns to view mode without closing the dialog, while `Add task` closes it.
 - The dialog is a native `<dialog>` opened with `showModal()`, so test focus/escape behavior against the real element; a hidden `dialog.task-detail` still exists in the DOM when closed. Assert on the `open` attribute (or `element.open`), not on existence.
 - The description is rendered from a safe Markdown subset (paragraphs, headings, lists, code, emphasis, http(s)/mailto links), not `white-space: pre-wrap`; a two-line paragraph still reads as one text block, so trim before comparing.
 - Each change to the task through SSE re-renders the open dialog; it always reflects the latest stored task.

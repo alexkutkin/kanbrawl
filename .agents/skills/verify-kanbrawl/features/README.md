@@ -29,7 +29,7 @@ This directory is the maintained source for verifying Kanbrawl's user-facing beh
 ## Features
 
 - [Live board and sync](./board-live-sync.md) — rendering from the board file, empty state, and live task creation/move over SSE.
-- [Task create, edit, delete](./task-crud.md) — the column form, inline card editing, and deletion.
+- [Task create, edit, delete](./task-crud.md) — the shared task dialog in create and edit modes, and deletion.
 - [Drag and drop](./drag-and-drop.md) — moving a card between columns with native drag events.
 - [Task detail dialog](./task-detail.md) — opening the native modal, its content, Escape, and the close button.
 - [Column settings](./column-settings.md) — renaming, adding, reordering, sorting, saving, and persistence.

@@ -262,16 +262,22 @@ async function scenarioTasks() {
   const title = `verify-ui-${stamp()}`;
   const editedTitle = `${title} edited`;
 
-  await check('create a task from the Todo column form', async () => {
+  await check('create a task from the Todo column in the dialog', async () => {
     const todo = await column('Todo');
     await todo.locator('.add-btn').click();
-    const form = todo.locator('.add-form');
+    const dialog = page.locator('dialog.task-detail');
+    await dialog.waitFor({ state: 'visible' });
+    const form = dialog.locator('.detail-edit-form');
     await form.locator('input[placeholder="Task title"]').fill(title);
     await form.locator('textarea').fill('Drafted in the web UI');
     await form.locator('select').selectOption('P0');
-    await form.locator('input[placeholder="Assignee (optional)"]').fill('human-verifier');
-    await form.locator('.btn-confirm').click();
+    await form.locator('input[placeholder="Name (optional)"]').fill('human-verifier');
+    await shot('create-dialog');
+    await form.locator('button[type="submit"]').click();
 
+    await waitFor(async () => !(await dialog.evaluate((node) => node.open)), {
+      label: 'create dialog to close',
+    });
     await waitForTask(title);
     const card = await task(title);
     assertEqual(await card.locator('.priority-badge').innerText(), 'P0', 'priority badge');
@@ -291,16 +297,28 @@ async function scenarioTasks() {
 
   await shot('created-via-ui');
 
-  await check('edit title, priority and assignee inline', async () => {
+  await check('edit title, priority and assignee in the dialog', async () => {
     const card = await task(title);
     await card.hover();
     await card.locator('button[title="Edit"]').click();
-    const form = card.locator('.edit-form');
-    await form.locator('input').first().fill(editedTitle);
+    const dialog = page.locator('dialog.task-detail');
+    await dialog.waitFor({ state: 'visible' });
+    const form = dialog.locator('.detail-edit-form');
+    await form.locator('input[placeholder="Task title"]').fill(editedTitle);
     await form.locator('textarea').fill('Edited in the web UI');
     await form.locator('select').selectOption('P2');
-    await form.locator('input[placeholder="Assignee (optional)"]').fill('robot-editor');
-    await form.locator('.btn-save').click();
+    await form.locator('input[placeholder="Name (optional)"]').fill('robot-editor');
+    await shot('edit-dialog');
+    await form.locator('button[type="submit"]').click();
+
+    await waitFor(
+      async () => (await dialog.locator('.detail-task-title').innerText()) === editedTitle,
+      { label: 'dialog to show the saved title' },
+    );
+    await page.keyboard.press('Escape');
+    await waitFor(async () => !(await dialog.evaluate((node) => node.open)), {
+      label: 'edit dialog to close',
+    });
 
     await waitForTask(editedTitle);
     const editedCard = await task(editedTitle);
