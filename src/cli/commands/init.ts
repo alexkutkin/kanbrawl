@@ -70,11 +70,14 @@ Use the Kanbrawl MCP tools for task management when working on this project.
 
 ### Workflow
 
+- Call \`get_columns\` when you need the current column names; they can be renamed
 - When building a plan, include task creation in it
-- Check existing tasks with \`list_tasks\` before creating to avoid duplicates
+- Check existing tasks with \`list_tasks\` (it covers every column and reports \`total\`/\`hasMore\`) before creating to avoid duplicates
+- Read a single task with \`get_task\` when you already have its ID
 - Always reload tasks with \`list_tasks\` before starting work on a task to get the latest updates
-- Set your name as assignee when you start working on a task
-- Move tasks between columns with \`move_task\` to track progress
+- Set your name as assignee and pass \`actor\` when you change a task, so humans see who did it
+- Pass \`expectedUpdatedAt\` from the task you read to get a \`CONFLICT\` instead of overwriting another agent's change
+- Move tasks between columns with \`move_task\`, or change fields and column together with \`update_task\`
 - Proceed with task execution one at a time, till it's done or blocked then move to the next one
 `;
 
