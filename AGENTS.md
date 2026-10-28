@@ -139,7 +139,7 @@ To test: open the workspace in VS Code, press F5 with the extension development 
 - Columns are edited through `PUT /api/columns` (or the web settings dialog); renames preserve task placement and column ids
 - MCP transport is stateless (new transport per request, no sessions)
 - The web UI is a live viewer AND editor — both humans and agents can modify tasks
-- HTTP binds to loopback by default. Binding elsewhere (`--host 0.0.0.0`) requires a token via `--token`/`KB_TOKEN` (auto-generated when absent), accepted as `x-kanbrawl-token`, `?token=`, or the cookie set by the first browser visit
+- HTTP binds to loopback by default; `--host 0.0.0.0` exposes the board on the network. There is no authentication — anyone who can reach the port can view and edit tasks
 - REST errors use `{ error, code, details? }` with stable codes (`TASK_NOT_FOUND`, `COLUMN_NOT_FOUND`, `CONFLICT`, …); MCP tool errors are `isError` results whose text starts with `Error [CODE]:`
 
 ## CLI

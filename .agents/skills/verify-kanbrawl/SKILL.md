@@ -16,19 +16,17 @@ npm run build                                                        # required 
 node .agents/skills/verify-kanbrawl/scripts/launch.mjs
 ```
 
-`launch.mjs` refuses to start when a verify instance is already recorded, wipes `.verify/run/data`, starts `bin/cli.js start --port 8473 --host 0.0.0.0 --token <KB_VERIFY_TOKEN>` with that directory as its working directory, waits for an authenticated `GET /api/board` to answer, then creates a disposable Playwright sandbox container. Ready means all of these printed lines appear:
+`launch.mjs` refuses to start when a verify instance is already recorded, wipes `.verify/run/data`, starts `bin/cli.js start --port 8473 --host 0.0.0.0` with that directory as its working directory, waits for `GET /api/board` to answer, then creates a disposable Playwright sandbox container. Ready means all of these printed lines appear:
 
 ```text
 ✔ Kanbrawl verify instance running on http://127.0.0.1:8473 (pid …)
 ✔ Board file: …/.verify/run/data/kanbrawl.json
-✔ Access token: kanbrawl-verify-token
 ✔ Columns: Todo, In progress, Blocked, Done
 ✔ disposable sandbox: kanbrawl-verify-8473-… (image playwright-sandbox)
   Container URL: http://host.docker.internal:8473
 ```
 
-- The sandbox reaches the host through `host.docker.internal`, so the server binds `0.0.0.0`; the token keeps that throwaway board private to this run. The recorded token in `.verify/run/instance.json` is used by `doctor.mjs`, `drive.mjs`, and the browser.
-- HTTP clients authenticate with `x-kanbrawl-token: <token>`. A browser can redeem the token once by opening `/?token=<token>`, which sets an httpOnly cookie and redirects to the clean URL; `runner.mjs` enters that way. `GET /healthz` stays unauthenticated.
+- The sandbox reaches the host through `host.docker.internal`, so the server binds `0.0.0.0`. The board has no authentication, so run this only on a machine and network where that is acceptable.
 - The board file is isolated per run; the repository `kanbrawl.json` and the Dockerized board on `8431` are never touched.
 - The sandbox container is named `kanbrawl-verify-<port>-<suffix>`, labelled `kanbrawl-verify=1`, and owned by this run. `cleanup.mjs` removes it; it is not the long-lived container other projects use.
 - The server log is `.verify/run/server.log`. If port `8473` is busy the server picks another port, and `launch.mjs` records the actual one in `.verify/run/instance.json`.
@@ -37,7 +35,6 @@ node .agents/skills/verify-kanbrawl/scripts/launch.mjs
 Environment overrides:
 
 - `KB_VERIFY_PORT` — board port (default `8473`).
-- `KB_VERIFY_TOKEN` — token for the verify instance (default `kanbrawl-verify-token`). Any non-empty value works; it only protects the throwaway board.
 - `KB_PLAYWRIGHT_IMAGE` — image for the disposable sandbox (default `playwright-sandbox`). It must stay alive (e.g. `sleep infinity`) and contain Playwright at `<KB_PW_ROOT>/node_modules`.
 - `KB_PLAYWRIGHT_CONTAINER` — reuse an already-running container instead of creating one. That container is left running at cleanup, only the scratch directory inside it is removed.
 - `KB_PW_ROOT` — directory containing `node_modules/playwright` inside the image (default `/app`).
@@ -52,7 +49,7 @@ Read-only. Checks, each printed with `✔`/`✖`:
 
 - the recorded pid is alive;
 - the listening socket on the port belongs to that pid (not another process);
-- an authenticated `GET /api/board` (using the recorded token) returns 200;
+- `GET /api/board` returns 200;
 - the API's tasks match `.verify/run/data/kanbrawl.json` (catches a stale or foreign instance);
 - the sandbox container recorded for this run is running;
 - the sandbox can reach the board URL, falling back to `http://172.17.0.1:<port>` and recording the working URL.
@@ -70,7 +67,7 @@ Features: `board`, `tasks`, `drag-drop`, `task-detail`, `columns`. See [features
 How a drive works:
 
 1. `drive.mjs` copies `scripts/runner.mjs` into `/tmp/kb-verify/<run-id>/` inside the sandbox recorded for this run.
-2. It executes the runner with `docker exec`, passing `KB_BASE_URL=http://host.docker.internal:<port>`, `KB_TOKEN=<recorded token>`, the feature id, and an evidence directory. The runner sends the token as `x-kanbrawl-token` on REST calls and opens the UI through `/?token=…`.
+2. It executes the runner with `docker exec`, passing `KB_BASE_URL=http://host.docker.internal:<port>`, the feature id, and an evidence directory.
 3. Chromium runs headless in the container; Lit open shadow DOM is pierced by Playwright CSS selectors, so selectors such as `kanbrawl-column .column-title` and `kanbrawl-task .task-title` work.
 4. Every scenario first resets the board through the production REST API (delete all tasks, `PUT /api/columns` with the four defaults), so runs are repeatable.
 5. After the run, evidence is copied back with `docker cp`, and host-side checks compare the served board with `kanbrawl.json` on disk.

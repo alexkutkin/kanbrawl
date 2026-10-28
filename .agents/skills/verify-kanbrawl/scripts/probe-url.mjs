@@ -2,15 +2,13 @@
 import process from 'node:process';
 
 const url = process.argv[2];
-const token = process.argv[3];
 if (!url) {
-  console.error('usage: node probe-url.mjs <base-url> [token]');
+  console.error('usage: node probe-url.mjs <base-url>');
   process.exit(2);
 }
 
 try {
   const response = await fetch(`${url}/api/board`, {
-    headers: token ? { 'x-kanbrawl-token': token } : {},
     signal: AbortSignal.timeout(5000),
   });
   const board = await response.json();

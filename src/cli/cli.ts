@@ -29,10 +29,6 @@ export function run(arguments_: string[]): void {
       'address to bind (default: 127.0.0.1, or 0.0.0.0 inside a container)',
     )
     .option(
-      '--token <token>',
-      'require this token for HTTP access (env: KB_TOKEN)',
-    )
-    .option(
       '--allow-origin <origin...>',
       'additional browser origins allowed to call the HTTP API',
     )

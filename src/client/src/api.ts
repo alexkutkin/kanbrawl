@@ -1,43 +1,12 @@
 import type { Board, Column, Task } from './types.js';
 
-const TOKEN_KEY = 'kanbrawl-token';
-
-function readToken(): string | undefined {
-  try {
-    const fromUrl = new URLSearchParams(globalThis.location.search).get(
-      'token',
-    );
-    if (fromUrl) {
-      globalThis.sessionStorage.setItem(TOKEN_KEY, fromUrl);
-      return fromUrl;
-    }
-
-    return globalThis.sessionStorage.getItem(TOKEN_KEY) ?? undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-const token = readToken();
-
-export function authToken(): string | undefined {
-  return token;
-}
-
 export function eventsUrl(): string {
-  return withToken('/events');
-}
-
-function withToken(path: string): string {
-  if (!token) return path;
-  const separator = path.includes('?') ? '&' : '?';
-  return `${path}${separator}token=${encodeURIComponent(token)}`;
+  return '/events';
 }
 
 function headers(json: boolean): Record<string, string> {
   const result: Record<string, string> = {};
   if (json) result['Content-Type'] = 'application/json';
-  if (token) result['x-kanbrawl-token'] = token;
   return result;
 }
 
@@ -55,7 +24,7 @@ export class ApiError extends Error {
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(withToken(path), init);
+    response = await fetch(path, init);
   } catch {
     throw new ApiError(
       'Cannot reach the Kanbrawl server. Check that it is still running.',

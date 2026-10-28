@@ -22,7 +22,7 @@ Preconditions:
 - The verify instance is running and `doctor.mjs` exits 0.
 - The board is at the recorded port (default `8473`), not `8431`.
 
-- **Run the scenario.** Run `node .agents/skills/verify-kanbrawl/scripts/drive.mjs board`. The runner resets the board, opens the UI (through `/?token=…`), and waits for the green connection dot (`.status-dot.online`).
+- **Run the scenario.** Run `node .agents/skills/verify-kanbrawl/scripts/drive.mjs board`. The runner resets the board, opens the UI, and waits for the green connection dot (`.status-dot.online`).
 - **Check rendering.** The rendered column names are `Todo`, `In progress`, `Blocked`, `Done` in that order, and four `.empty-state` blocks read `No tasks`.
 - **Check live create.** The runner posts a `P0` task assigned to `verify-agent` to `POST /api/tasks`. A card with that title, the `P0` badge, and the assignee chip appears in `Todo` without navigation.
 - **Check live move.** The runner patches the task to `In progress`. The card leaves `Todo` and appears under `In progress`; `GET /api/board` reports `column: "In progress"`.

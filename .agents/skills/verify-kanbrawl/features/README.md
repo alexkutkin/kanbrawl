@@ -5,9 +5,8 @@ This directory is the maintained source for verifying Kanbrawl's user-facing beh
 ## Baseline preconditions
 
 - Repository dependencies are installed (`npm install`) and the app is built (`npm run build`).
-- A disposable instance was started by `node .agents/skills/verify-kanbrawl/scripts/launch.mjs` and reported a pid, port, isolated board file, access token, and the four default columns.
+- A disposable instance was started by `node .agents/skills/verify-kanbrawl/scripts/launch.mjs` and reported a pid, port, isolated board file, and the four default columns.
 - `node .agents/skills/verify-kanbrawl/scripts/doctor.mjs` exits 0.
-- The instance is token-protected: API calls carry `x-kanbrawl-token` (the runner does this via `KB_TOKEN`), and the browser enters through `/?token=<token>` once to redeem the httpOnly cookie. Do not treat a `401` as an app failure.
 - The disposable Playwright sandbox created by `launch.mjs` (or a container named by `KB_PLAYWRIGHT_CONTAINER`) is running and can reach `http://host.docker.internal:<port>`.
 - Never drive the user's real instance on port `8431`, and never drive an instance this run did not launch.
 

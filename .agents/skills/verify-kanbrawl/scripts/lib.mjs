@@ -30,10 +30,6 @@ export const SANDBOX_IMAGE =
 export const CONTAINER_ROOT = '/tmp/kb-verify';
 export const CONTAINER_MODULE_ROOT = process.env.KB_PW_ROOT ?? '/app';
 export const PORT = Number(process.env.KB_VERIFY_PORT ?? 8473);
-// Fixed token for the throwaway verify instance. It only protects the
-// sandbox board this run launches, never the user's live instance.
-export const VERIFY_TOKEN =
-  process.env.KB_VERIFY_TOKEN ?? 'kanbrawl-verify-token';
 
 export function hostBaseUrl(port = PORT) {
   return `http://127.0.0.1:${port}`;
@@ -121,10 +117,8 @@ export function listeningPids(port) {
     .map((value) => Number(value));
 }
 
-export async function fetchBoard(baseUrl, token) {
-  const headers = token ? { 'x-kanbrawl-token': token } : {};
+export async function fetchBoard(baseUrl) {
   const response = await fetch(`${baseUrl}/api/board`, {
-    headers,
     signal: AbortSignal.timeout(5000),
   });
   if (!response.ok) throw new Error(`GET /api/board -> ${response.status}`);

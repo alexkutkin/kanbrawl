@@ -59,7 +59,7 @@ To launch the web UI and HTTP MCP server:
 npx kanbrawl start
 ```
 
-Open [http://localhost:8431](http://localhost:8431) to view the board. By default the server binds to loopback only. To share the board on your local network, start it with `--host 0.0.0.0`; Kanbrawl then generates an access token and prints the URL to open:
+Open [http://localhost:8431](http://localhost:8431) to view the board. By default the server binds to loopback only; start it with `--host 0.0.0.0` to share the board on your local network. The board has no authentication, so anyone who can reach the port can view and edit it.
 
 ### Run with Docker
 
@@ -69,10 +69,7 @@ docker compose up --build -d
 
 The board is available at [http://localhost:8431](http://localhost:8431) and the MCP endpoint at `http://localhost:8431/mcp`. Board data is persisted in a host folder bind-mounted at `/data` (configured in `docker-compose.yml`).
 
-Because the container must listen beyond loopback, Kanbrawl generates an access token on start. Read it from `docker compose logs kanbrawl`, then open `http://localhost:8431/?token=<token>` once; the browser keeps it in a cookie. Set `KB_TOKEN` in the compose environment to use a stable token instead. Agents calling the API or MCP endpoint pass the token as the `x-kanbrawl-token` header.
-
-> [!WARNING]
-> Keep the token private. Anyone who has it can view and edit the board. The server rejects requests whose `Origin` is not loopback, the same host, or listed via `--allow-origin`. If other devices cannot connect, allow inbound TCP port 8431 in the host firewall.
+The container listens on all interfaces and the board has no authentication. The published port is reachable by anyone who can connect to this machine. The server rejects browser requests whose `Origin` is not loopback, the same host, or listed via `--allow-origin`. If other devices cannot connect, allow inbound TCP port 8431 in the host firewall.
 
 ### Manual MCP Configuration
 
@@ -113,7 +110,7 @@ kanbrawl                    # Start HTTP server (default)
 kanbrawl start              # Start HTTP server
 kanbrawl start --stdio      # Start MCP server over stdio transport
 kanbrawl start -p 9000      # Start HTTP server on port 9000
-kanbrawl start --host 0.0.0.0  # Expose on the local network (token required)
+kanbrawl start --host 0.0.0.0  # Expose on the local network (no authentication)
 kanbrawl task "title"       # Create a task
 kanbrawl task "title" -u    # Update existing task by title match
 kanbrawl init               # Interactive setup for AI tools
@@ -121,7 +118,7 @@ kanbrawl --version          # Show version
 kanbrawl --help             # Show help
 ```
 
-`start` options for HTTP mode: `-p, --port`, `-H, --host` (defaults to `127.0.0.1`, or `0.0.0.0` inside a container), `--token` (or `KB_TOKEN`), and `--allow-origin <origin…>` for additional browser origins.
+`start` options for HTTP mode: `-p, --port`, `-H, --host` (defaults to `127.0.0.1`, or `0.0.0.0` inside a container), and `--allow-origin <origin…>` for additional browser origins.
 
 ### `task` command
 

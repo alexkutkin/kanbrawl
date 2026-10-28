@@ -1,5 +1,4 @@
 import process from 'node:process';
-import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:net';
 import { networkInterfaces } from 'node:os';
 import { existsSync } from 'node:fs';
@@ -23,7 +22,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export const DEFAULT_PORT = 8431;
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
-const TOKEN_COOKIE = 'kanbrawl_token';
 
 async function isPortAvailable(port: number, host: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -76,7 +74,6 @@ export type ServerOptions = {
   stdio?: boolean;
   port?: number;
   host?: string;
-  token?: string;
   allowOrigins?: string[];
   boardFile?: string;
 };
@@ -103,19 +100,6 @@ function localAddresses(): Set<string> {
   }
 
   return addresses;
-}
-
-function parseCookies(header: string | undefined): Record<string, string> {
-  const cookies: Record<string, string> = {};
-  for (const part of (header ?? '').split(';')) {
-    const index = part.indexOf('=');
-    if (index === -1) continue;
-    const name = part.slice(0, index).trim();
-    if (!name) continue;
-    cookies[name] = decodeURIComponent(part.slice(index + 1).trim());
-  }
-
-  return cookies;
 }
 
 function createOriginGuard(allowOrigins: string[]) {
@@ -156,60 +140,18 @@ function createOriginGuard(allowOrigins: string[]) {
   };
 }
 
-function createTokenGuard(token: string | undefined) {
-  return (request: Request, res: Response, next: NextFunction): void => {
-    if (!token) {
-      next();
-      return;
-    }
-
-    const queryToken =
-      typeof request.query.token === 'string' ? request.query.token : undefined;
-    const provided =
-      request.get('x-kanbrawl-token') ??
-      queryToken ??
-      parseCookies(request.headers.cookie)[TOKEN_COOKIE];
-
-    if (provided !== token) {
-      res.status(401).json({
-        error: 'Missing or invalid Kanbrawl token.',
-        code: 'UNAUTHORIZED',
-      });
-      return;
-    }
-
-    if (
-      queryToken &&
-      request.method === 'GET' &&
-      !request.path.startsWith('/api') &&
-      !request.path.startsWith('/events')
-    ) {
-      res.cookie(TOKEN_COOKIE, token, {
-        httpOnly: true,
-        sameSite: 'strict',
-      });
-      res.redirect(302, request.path);
-      return;
-    }
-
-    next();
-  };
-}
-
 function createHttpApp(
   store: BoardStore,
   sse: SSEManager,
   mcpServer: McpServer,
-  options: { token?: string; allowOrigins?: string[] } = {},
+  options: { allowOrigins?: string[] } = {},
 ): express.Express {
   const app = express();
-  // Unauthenticated liveness probe for container health checks. It exposes no
-  // board data, so it stays outside both the origin and token guards.
+  // Liveness probe for container health checks; it exposes no board data.
   app.get('/healthz', (_request, res) => {
     res.json({ status: 'ok' });
   });
   app.use(createOriginGuard(options.allowOrigins ?? []));
-  app.use(createTokenGuard(options.token));
   app.use(express.json());
 
   // MCP Streamable HTTP endpoint
@@ -288,20 +230,8 @@ export async function startServer(
     ...(process.env.KB_ALLOW_ORIGINS ?? '').split(',').filter(Boolean),
   ];
 
-  let token = options.token ?? process.env.KB_TOKEN;
-  if (!token && !isLoopbackHost) {
-    token = randomBytes(24).toString('base64url');
-    log(
-      '🔐 Binding to a network interface without a token; generated one for this run.',
-    );
-    log(`   Access token: ${token}`);
-    log(
-      '   Pass it as ?token=…, the x-kanbrawl-token header, or --token to keep it stable.',
-    );
-  }
-
   // --- Express App ---
-  const app = createHttpApp(store, sse, mcpServer, { token, allowOrigins });
+  const app = createHttpApp(store, sse, mcpServer, { allowOrigins });
   const requestedPort =
     options.port ??
     Number.parseInt(process.env.PORT ?? String(DEFAULT_PORT), 10);
@@ -321,7 +251,9 @@ export async function startServer(
         }
       }
 
-      log(`   Bound to ${host}; token required: ${token ? 'yes' : 'no'}`);
+      log(
+        `   Bound to ${host}; anyone who can reach this port can edit the board`,
+      );
     }
 
     log('   MCP transport: HTTP');

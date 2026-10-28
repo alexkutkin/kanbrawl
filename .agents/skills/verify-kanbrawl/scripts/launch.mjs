@@ -13,7 +13,6 @@ import {
   PORT,
   REPO_ROOT,
   SANDBOX_IMAGE,
-  VERIFY_TOKEN,
   containerBaseUrl,
   docker,
   dockerContainerRunning,
@@ -56,12 +55,10 @@ const child = spawn(
     'start',
     '--port',
     String(PORT),
-    // The sandbox reaches the host, so bind beyond loopback; the token keeps
-    // the throwaway board private to this run.
+    // The sandbox reaches the host over the Docker bridge, so bind beyond
+    // loopback. The board is throwaway and isolated per run.
     '--host',
     '0.0.0.0',
-    '--token',
-    VERIFY_TOKEN,
   ],
   {
     cwd: DATA_DIR,
@@ -160,7 +157,7 @@ async function waitForReady(pid) {
     if (match) {
       const port = Number(match[1]);
       try {
-        const board = await fetchBoard(hostBaseUrl(port), VERIFY_TOKEN);
+        const board = await fetchBoard(hostBaseUrl(port));
         return { port, board };
       } catch (error) {
         lastError = error.message;
@@ -181,7 +178,6 @@ try {
   const instance = {
     pid: child.pid,
     port,
-    token: VERIFY_TOKEN,
     hostUrl: hostBaseUrl(port),
     containerUrl: containerBaseUrl(port),
     dataDir: DATA_DIR,
@@ -205,7 +201,6 @@ try {
 
   ok(`Kanbrawl verify instance running on ${instance.hostUrl} (pid ${child.pid})`);
   ok(`Board file: ${instance.dataFile}`);
-  ok(`Access token: ${instance.token}`);
   ok(`Columns: ${names}`);
   ok(
     `${container.owned ? 'disposable' : 'reused'} sandbox: ${container.name}` +
