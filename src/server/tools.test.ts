@@ -8,10 +8,12 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { BoardStore } from './store.js';
 import { registerTools } from './tools.js';
 
+const DEFAULT_COLUMN_NAMES = ['Todo', 'In progress', 'Blocked', 'Done'];
+
 async function createTestMcp() {
   const dir = mkdtempSync(join(tmpdir(), 'kanbrawl-mcp-test-'));
   const filePath = join(dir, 'kanbrawl.json');
-  const store = new BoardStore(filePath);
+  const store = new BoardStore(filePath, { watch: false });
 
   const mcpServer = new McpServer({
     name: 'kanbrawl-test',
@@ -59,31 +61,28 @@ describe('MCP Tools', () => {
   afterEach(async () => {
     await client.close();
     await mcpServer.close();
+    store.dispose();
     rmSync(dir, { recursive: true, force: true });
   });
 
   // --- get_columns ---
   describe('get_columns', () => {
-    it('returns default columns with zero task counts', async () => {
+    it('returns default columns with stable IDs and zero counts', async () => {
       const result = await callTool(client, 'get_columns');
       const data = result.json();
 
-      expect(data.columns).toEqual([
-        { name: 'Todo', taskCount: 0, sortBy: 'priority', sortOrder: 'asc' },
-        {
-          name: 'In progress',
-          taskCount: 0,
-          sortBy: 'created',
-          sortOrder: 'asc',
-        },
-        {
-          name: 'Blocked',
-          taskCount: 0,
-          sortBy: 'created',
-          sortOrder: 'asc',
-        },
-        { name: 'Done', taskCount: 0, sortBy: 'updated', sortOrder: 'desc' },
-      ]);
+      expect(data.columns.map((c: { name: string }) => c.name)).toEqual(
+        DEFAULT_COLUMN_NAMES,
+      );
+      expect(data.columns.every((c: { id?: string }) => Boolean(c.id))).toBe(
+        true,
+      );
+      expect(data.columns[0]).toMatchObject({
+        name: 'Todo',
+        taskCount: 0,
+        sortBy: 'priority',
+        sortOrder: 'asc',
+      });
       expect(result.structured).toEqual(data);
     });
 
@@ -97,34 +96,63 @@ describe('MCP Tools', () => {
 
       const result = await callTool(client, 'get_columns');
       const data = result.json();
+      expect(
+        data.columns.find((c: { name: string }) => c.name === 'Todo').taskCount,
+      ).toBe(2);
+      expect(
+        data.columns.find((c: { name: string }) => c.name === 'Done').taskCount,
+      ).toBe(1);
+    });
+  });
 
-      const todoCol = data.columns.find(
-        (c: { name: string }) => c.name === 'Todo',
-      );
-      const doneCol = data.columns.find(
-        (c: { name: string }) => c.name === 'Done',
-      );
-      expect(todoCol.taskCount).toBe(2);
-      expect(doneCol.taskCount).toBe(1);
+  // --- get_task ---
+  describe('get_task', () => {
+    it('returns a task by id', async () => {
+      const created = await callTool(client, 'create_task', {
+        title: 'Find me',
+        description: 'Details',
+      });
+      const result = await callTool(client, 'get_task', {
+        id: created.json().id,
+      });
+      expect(result.isError).toBeUndefined();
+      expect(result.json().title).toBe('Find me');
+      expect(result.json().description).toBe('Details');
+    });
+
+    it('returns a coded error for unknown ids', async () => {
+      const result = await callTool(client, 'get_task', {
+        id: '00000000-0000-0000-0000-000000000000',
+      });
+      expect(result.isError).toBe(true);
+      expect(result.text).toMatch(/\[TASK_NOT_FOUND]/);
     });
   });
 
   // --- list_tasks ---
   describe('list_tasks', () => {
-    it('returns empty array when no tasks', async () => {
+    it('returns an empty page with metadata when no tasks', async () => {
       const result = await callTool(client, 'list_tasks');
-      expect(result.json().tasks).toEqual([]);
-      expect(result.structured).toEqual({ tasks: [] });
+      expect(result.json()).toEqual({
+        tasks: [],
+        total: 0,
+        hasMore: false,
+        offset: 0,
+      });
+      expect(result.structured).toEqual(result.json());
     });
 
-    it('lists tasks in default column (Todo)', async () => {
+    it('lists tasks from every column by default', async () => {
       await callTool(client, 'create_task', { title: 'A' });
       await callTool(client, 'create_task', { title: 'B', column: 'Done' });
 
       const result = await callTool(client, 'list_tasks');
-      const { tasks } = result.json();
-      expect(tasks).toHaveLength(1);
-      expect(tasks[0].title).toBe('A');
+      const { tasks, total } = await result.json();
+      expect(total).toBe(2);
+      expect(tasks.map((t: { title: string }) => t.title).sort()).toEqual([
+        'A',
+        'B',
+      ]);
     });
 
     it('lists tasks in a specific column', async () => {
@@ -132,76 +160,74 @@ describe('MCP Tools', () => {
       await callTool(client, 'create_task', { title: 'B', column: 'Done' });
 
       const result = await callTool(client, 'list_tasks', { column: 'Done' });
-      const { tasks } = result.json();
-      expect(tasks).toHaveLength(1);
-      expect(tasks[0].title).toBe('B');
+      expect(result.json().tasks).toHaveLength(1);
+      expect(result.json().tasks[0].title).toBe('B');
+      expect(result.json().total).toBe(1);
     });
 
-    it('filters by priority', async () => {
-      await callTool(client, 'create_task', { title: 'Low', priority: 'P2' });
-      await callTool(client, 'create_task', { title: 'High', priority: 'P0' });
-
-      const result = await callTool(client, 'list_tasks', { priority: 'P0' });
-      const { tasks } = result.json();
-      expect(tasks).toHaveLength(1);
-      expect(tasks[0].title).toBe('High');
-    });
-
-    it('returns error for invalid column', async () => {
-      const result = await callTool(client, 'list_tasks', {
-        column: 'Nonexistent',
-      });
-      expect(result.isError).toBe(true);
-      expect(result.text).toMatch(/does not exist/i);
-    });
-
-    it('filters by assignee (case-insensitive)', async () => {
-      await callTool(client, 'create_task', {
-        title: 'Mine',
-        assignee: 'Alice',
-      });
-      await callTool(client, 'create_task', {
-        title: 'Theirs',
-        assignee: 'Bob',
-      });
-
-      const result = await callTool(client, 'list_tasks', {
-        assignee: 'alice',
-      });
-      const { tasks } = result.json();
-      expect(tasks).toHaveLength(1);
-      expect(tasks[0].title).toBe('Mine');
-    });
-
-    it('limits results with max param (default 10)', async () => {
+    it('reports total and hasMore instead of hiding tasks', async () => {
       for (let index = 0; index < 12; index++) {
         // eslint-disable-next-line no-await-in-loop
         await callTool(client, 'create_task', { title: `Task ${index}` });
       }
 
-      const result = await callTool(client, 'list_tasks');
-      expect(result.json().tasks).toHaveLength(10);
+      const all = await callTool(client, 'list_tasks');
+      expect(all.json().tasks).toHaveLength(12);
+      expect(all.json().total).toBe(12);
+      expect(all.json().hasMore).toBe(false);
+
+      const page = await callTool(client, 'list_tasks', {
+        max: 5,
+        offset: 10,
+      });
+      expect(page.json().tasks).toHaveLength(2);
+      expect(page.json().total).toBe(12);
+      expect(page.json().hasMore).toBe(false);
+      expect(page.json().offset).toBe(10);
+
+      const firstPage = await callTool(client, 'list_tasks', { max: 5 });
+      expect(firstPage.json().hasMore).toBe(true);
     });
 
-    it('respects custom max param', async () => {
-      for (let index = 0; index < 5; index++) {
-        // eslint-disable-next-line no-await-in-loop
-        await callTool(client, 'create_task', { title: `Task ${index}` });
-      }
+    it('filters by priority and assignee', async () => {
+      await callTool(client, 'create_task', {
+        title: 'Mine',
+        priority: 'P0',
+        assignee: 'Alice',
+      });
+      await callTool(client, 'create_task', {
+        title: 'Theirs',
+        priority: 'P2',
+        assignee: 'Bob',
+      });
 
-      const result = await callTool(client, 'list_tasks', { max: 3 });
-      expect(result.json().tasks).toHaveLength(3);
+      const byPriority = await callTool(client, 'list_tasks', {
+        priority: 'P0',
+      });
+      expect(
+        byPriority.json().tasks.map((t: { title: string }) => t.title),
+      ).toEqual(['Mine']);
+
+      const byAssignee = await callTool(client, 'list_tasks', {
+        assignee: 'alice',
+      });
+      expect(
+        byAssignee.json().tasks.map((t: { title: string }) => t.title),
+      ).toEqual(['Mine']);
+    });
+
+    it('returns a coded error for an unknown column', async () => {
+      const result = await callTool(client, 'list_tasks', {
+        column: 'Nonexistent',
+      });
+      expect(result.isError).toBe(true);
+      expect(result.text).toMatch(/\[COLUMN_NOT_FOUND]/);
+      expect(result.text).toMatch(/availableColumns/);
     });
 
     it('sorts by priority (P0 first) then by created date', async () => {
-      await callTool(client, 'create_task', {
-        title: 'Low',
-        priority: 'P2',
-      });
-      await callTool(client, 'create_task', {
-        title: 'High',
-        priority: 'P0',
-      });
+      await callTool(client, 'create_task', { title: 'Low', priority: 'P2' });
+      await callTool(client, 'create_task', { title: 'High', priority: 'P0' });
       await callTool(client, 'create_task', {
         title: 'Normal',
         priority: 'P1',
@@ -209,6 +235,7 @@ describe('MCP Tools', () => {
       await callTool(client, 'create_task', {
         title: 'High2',
         priority: 'P0',
+        column: 'Done',
       });
 
       const result = await callTool(client, 'list_tasks', { max: 100 });
@@ -219,7 +246,7 @@ describe('MCP Tools', () => {
 
   // --- create_task ---
   describe('create_task', () => {
-    it('creates a task with defaults', async () => {
+    it('creates a task with defaults and actor metadata', async () => {
       const result = await callTool(client, 'create_task', {
         title: 'New task',
       });
@@ -230,26 +257,39 @@ describe('MCP Tools', () => {
       expect(task.priority).toBe('P1');
       expect(task.description).toBe('');
       expect(task.assignee).toBe('');
+      expect(task.lastActor).toBe('');
       expect(task.id).toBeDefined();
-      expect(task.createdAt).toBeDefined();
       expect(result.structured).toEqual(task);
     });
 
-    it('creates a task with all fields', async () => {
+    it('records the actor and hides the idempotency key', async () => {
       const result = await callTool(client, 'create_task', {
         title: 'Full task',
         description: 'Details',
         column: 'In progress',
         priority: 'P0',
         assignee: 'agent-x',
+        actor: 'agent-x',
+        clientRequestId: 'request-1',
       });
       const task = result.json();
 
-      expect(task.title).toBe('Full task');
-      expect(task.description).toBe('Details');
       expect(task.column).toBe('In progress');
-      expect(task.priority).toBe('P0');
-      expect(task.assignee).toBe('agent-x');
+      expect(task.lastActor).toBe('agent-x');
+      expect(task.clientRequestId).toBeUndefined();
+    });
+
+    it('is idempotent for a repeated clientRequestId', async () => {
+      const first = await callTool(client, 'create_task', {
+        title: 'Once',
+        clientRequestId: 'key-1',
+      });
+      const second = await callTool(client, 'create_task', {
+        title: 'Once again',
+        clientRequestId: 'key-1',
+      });
+      expect(second.json().id).toBe(first.json().id);
+      expect(store.getTasks()).toHaveLength(1);
     });
 
     it('accepts 4000 description characters and rejects 4001', async () => {
@@ -269,77 +309,97 @@ describe('MCP Tools', () => {
       expect(store.getTasks()).toHaveLength(1);
     });
 
-    it('returns error for invalid column', async () => {
+    it('returns a coded error for an unknown column', async () => {
       const result = await callTool(client, 'create_task', {
         title: 'Task',
         column: 'Fake',
       });
       expect(result.isError).toBe(true);
-      expect(result.text).toMatch(/does not exist/i);
+      expect(result.text).toMatch(/\[COLUMN_NOT_FOUND]/);
     });
   });
 
   // --- move_task ---
   describe('move_task', () => {
-    it('moves a task to another column', async () => {
+    it('moves a task and records the actor', async () => {
       const created = await callTool(client, 'create_task', {
         title: 'Movable',
       });
-      const taskId = created.json().id;
-
       const result = await callTool(client, 'move_task', {
-        id: taskId,
+        id: created.json().id,
         column: 'Done',
+        actor: 'mover',
       });
-      const task = result.json();
-      expect(task.column).toBe('Done');
+      expect(result.json().column).toBe('Done');
+      expect(result.json().lastActor).toBe('mover');
     });
 
-    it('returns error for non-existent task', async () => {
+    it('rejects a stale expectedUpdatedAt with CONFLICT', async () => {
+      const created = await callTool(client, 'create_task', { title: 'Task' });
+      const stale = created.json().updatedAt as string;
+      await new Promise((resolve) => {
+        setTimeout(resolve, 2);
+      });
+      await callTool(client, 'update_task', {
+        id: created.json().id,
+        title: 'Changed',
+      });
+
       const result = await callTool(client, 'move_task', {
+        id: created.json().id,
+        column: 'Done',
+        expectedUpdatedAt: stale,
+      });
+      expect(result.isError).toBe(true);
+      expect(result.text).toMatch(/\[CONFLICT]/);
+      expect(store.getTasks()[0].column).toBe('Todo');
+    });
+
+    it('returns coded errors for unknown tasks and columns', async () => {
+      const missing = await callTool(client, 'move_task', {
         id: '00000000-0000-0000-0000-000000000000',
         column: 'Done',
       });
-      expect(result.isError).toBe(true);
-      expect(result.text).toMatch(/not found/i);
-    });
+      expect(missing.text).toMatch(/\[TASK_NOT_FOUND]/);
 
-    it('returns error for invalid column', async () => {
       const created = await callTool(client, 'create_task', { title: 'Task' });
-      const result = await callTool(client, 'move_task', {
+      const badColumn = await callTool(client, 'move_task', {
         id: created.json().id,
         column: 'Nonexistent',
       });
-      expect(result.isError).toBe(true);
-      expect(result.text).toMatch(/does not exist/i);
+      expect(badColumn.text).toMatch(/\[COLUMN_NOT_FOUND]/);
     });
   });
 
   // --- update_task ---
   describe('update_task', () => {
-    it('updates task title', async () => {
-      const created = await callTool(client, 'create_task', {
-        title: 'Original',
-      });
-      const result = await callTool(client, 'update_task', {
-        id: created.json().id,
-        title: 'Updated',
-      });
-      expect(result.json().title).toBe('Updated');
-    });
-
-    it('updates multiple fields', async () => {
+    it('updates fields and the column in one call', async () => {
       const created = await callTool(client, 'create_task', { title: 'Task' });
       const result = await callTool(client, 'update_task', {
         id: created.json().id,
         description: 'New desc',
         priority: 'P2',
         assignee: 'someone',
+        column: 'Done',
+        actor: 'editor',
       });
       const task = result.json();
       expect(task.description).toBe('New desc');
       expect(task.priority).toBe('P2');
       expect(task.assignee).toBe('someone');
+      expect(task.column).toBe('Done');
+      expect(task.lastActor).toBe('editor');
+    });
+
+    it('does not leave partial changes for an invalid column', async () => {
+      const created = await callTool(client, 'create_task', { title: 'Task' });
+      const result = await callTool(client, 'update_task', {
+        id: created.json().id,
+        title: 'Changed',
+        column: 'Nonexistent',
+      });
+      expect(result.isError).toBe(true);
+      expect(store.getTasks()[0].title).toBe('Task');
     });
 
     it('accepts 4000 description characters and rejects 4001', async () => {
@@ -358,18 +418,15 @@ describe('MCP Tools', () => {
         description: `${description}x`,
       });
       expect(rejected.isError).toBe(true);
-      expect(store.getTasks().find((task) => task.id === id)?.description).toBe(
-        description,
-      );
+      expect(store.getTask(id)!.description).toBe(description);
     });
 
-    it('returns error for non-existent task', async () => {
+    it('returns a coded error for unknown ids', async () => {
       const result = await callTool(client, 'update_task', {
         id: '00000000-0000-0000-0000-000000000000',
         title: 'Nope',
       });
-      expect(result.isError).toBe(true);
-      expect(result.text).toMatch(/not found/i);
+      expect(result.text).toMatch(/\[TASK_NOT_FOUND]/);
     });
   });
 
@@ -379,30 +436,23 @@ describe('MCP Tools', () => {
       const created = await callTool(client, 'create_task', {
         title: 'To delete',
       });
-      const taskId = created.json().id;
-
-      const result = await callTool(client, 'delete_task', { id: taskId });
+      const result = await callTool(client, 'delete_task', {
+        id: created.json().id,
+      });
       expect(result.isError).toBeUndefined();
       expect(result.structured).toHaveProperty('message');
-      expect((result.structured as { message: string }).message).toMatch(
-        /deleted/i,
-      );
-
-      // Verify it's gone
-      const list = await callTool(client, 'list_tasks');
-      expect(list.json().tasks).toHaveLength(0);
+      expect(store.getTasks()).toHaveLength(0);
     });
 
-    it('returns error for non-existent task', async () => {
+    it('returns a coded error for unknown ids', async () => {
       const result = await callTool(client, 'delete_task', {
         id: '00000000-0000-0000-0000-000000000000',
       });
-      expect(result.isError).toBe(true);
-      expect(result.text).toMatch(/not found/i);
+      expect(result.text).toMatch(/\[TASK_NOT_FOUND]/);
     });
   });
 
-  // --- tool listing ---
+  // --- tool discovery ---
   describe('tool discovery', () => {
     it('lists all registered tools', async () => {
       const { tools } = await client.listTools();
@@ -411,10 +461,61 @@ describe('MCP Tools', () => {
         'create_task',
         'delete_task',
         'get_columns',
+        'get_task',
         'list_tasks',
         'move_task',
         'update_task',
       ]);
+    });
+
+    it('publishes truthful annotations', async () => {
+      const { tools } = await client.listTools();
+      const byName = new Map(tools.map((tool) => [tool.name, tool]));
+      expect(byName.get('get_task')?.annotations).toMatchObject({
+        readOnlyHint: true,
+        idempotentHint: true,
+      });
+      for (const name of ['move_task', 'update_task', 'delete_task']) {
+        expect(byName.get(name)?.annotations?.idempotentHint).toBe(false);
+      }
+
+      expect(byName.get('delete_task')?.description).not.toMatch(/errorneous/);
+    });
+
+    it('does not bake current column names into the tool list', async () => {
+      await callTool(client, 'get_columns');
+      const columns = store
+        .getColumns()
+        .map((column) =>
+          column.name === 'Todo' ? { ...column, name: 'Backlog' } : column,
+        );
+      store.updateColumns(columns);
+
+      const after = JSON.stringify(await client.listTools());
+      expect(after).not.toContain('Todo');
+      expect(after).not.toContain('Backlog');
+
+      const listed = await callTool(client, 'list_tasks');
+      expect(listed.isError).toBeUndefined();
+      expect(listed.json().total).toBe(0);
+    });
+
+    it('keeps working after a column rename', async () => {
+      const columns = store
+        .getColumns()
+        .map((column) =>
+          column.name === 'Todo' ? { ...column, name: 'Backlog' } : column,
+        );
+      store.updateColumns(columns);
+
+      const created = await callTool(client, 'create_task', {
+        title: 'After rename',
+      });
+      expect(created.isError).toBeUndefined();
+      expect(created.json().column).toBe('Backlog');
+
+      const listed = await callTool(client, 'list_tasks');
+      expect(listed.json().tasks[0].title).toBe('After rename');
     });
   });
 });

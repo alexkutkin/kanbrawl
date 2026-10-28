@@ -1,6 +1,59 @@
-import { Router } from 'express';
+import { Router, type Response } from 'express';
+import { BoardError } from './errors.js';
 import type { BoardStore } from './store.js';
 import type { Column } from './types.js';
+
+const STATUS_BY_CODE: Record<string, number> = {
+  TASK_NOT_FOUND: 404,
+  COLUMN_NOT_FOUND: 404,
+  DUPLICATE_COLUMN: 409,
+  CONFLICT: 409,
+  BOARD_LOCKED: 503,
+  INVALID_BOARD_FILE: 500,
+};
+
+function sendError(res: Response, error: unknown): void {
+  if (error instanceof BoardError) {
+    const status = STATUS_BY_CODE[error.code] ?? 400;
+    res.status(status).json({
+      error: error.message,
+      code: error.code,
+      ...(error.details ? { details: error.details } : {}),
+    });
+    return;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  res.status(500).json({ error: message, code: 'INTERNAL_ERROR' });
+}
+
+function actorOf(request: {
+  get: (name: string) => string | undefined;
+}): string {
+  const actor = request.get('x-kanbrawl-actor')?.trim() ?? '';
+  return actor.length > 0 ? actor : 'human';
+}
+
+type TaskBody = {
+  title?: string;
+  description?: string;
+  column?: string;
+  priority?: string;
+  assignee?: string;
+  expectedUpdatedAt?: string;
+  clientRequestId?: string;
+  actor?: string;
+};
+
+function actorFrom(
+  request: {
+    get: (name: string) => string | undefined;
+  },
+  body: TaskBody,
+): string {
+  const actor = body.actor?.trim() ?? '';
+  return actor.length > 0 ? actor : actorOf(request);
+}
 
 export function createApiRouter(store: BoardStore): Router {
   // eslint-disable-next-line new-cap
@@ -14,81 +67,38 @@ export function createApiRouter(store: BoardStore): Router {
   // Create a task
   router.post('/tasks', (request, res) => {
     try {
-      const { title, description, column, priority, assignee } =
-        request.body as {
-          title?: string;
-          description?: string;
-          column?: string;
-          priority?: string;
-          assignee?: string;
-        };
-
-      if (!title || typeof title !== 'string' || title.trim().length === 0) {
-        res.status(400).json({ error: 'Title is required' });
-        return;
-      }
-
-      const task = store.createTask(
-        title.trim(),
-        description?.trim(),
-        column,
-        priority,
-        assignee?.trim(),
-      );
+      const body = request.body as TaskBody;
+      const task = store.createTask({
+        title: body.title ?? '',
+        description: body.description,
+        column: body.column,
+        priority: body.priority,
+        assignee: body.assignee,
+        clientRequestId: body.clientRequestId,
+        actor: actorFrom(request, body),
+      });
       res.status(201).json(task);
     } catch (error) {
-      res.status(400).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
+      sendError(res, error);
     }
   });
 
-  // Update a task (title, description, and/or column)
+  // Update a task (any combination of fields, including its column)
   router.patch('/tasks/:id', (request, res) => {
     try {
-      const { id } = request.params;
-      const { title, description, column, priority, assignee } =
-        request.body as {
-          title?: string;
-          description?: string;
-          column?: string;
-          priority?: string;
-          assignee?: string;
-        };
-
-      // If column is being changed, move the task first
-      if (column !== undefined) {
-        store.moveTask(id, column);
-      }
-
-      // If any updatable fields are being changed
-      if (
-        title !== undefined ||
-        description !== undefined ||
-        priority !== undefined ||
-        assignee !== undefined
-      ) {
-        const task = store.updateTask(id, {
-          title,
-          description,
-          priority,
-          assignee,
-        });
-        res.json(task);
-      } else {
-        // Only column was changed, return the task
-        const task = store.getTask(id);
-        if (!task) {
-          res.status(404).json({ error: `Task "${id}" not found` });
-          return;
-        }
-
-        res.json(task);
-      }
+      const body = request.body as TaskBody;
+      const task = store.updateTask(request.params.id, {
+        title: body.title,
+        description: body.description,
+        column: body.column,
+        priority: body.priority,
+        assignee: body.assignee,
+        expectedUpdatedAt: body.expectedUpdatedAt,
+        actor: actorFrom(request, body),
+      });
+      res.json(task);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const status = message.includes('not found') ? 404 : 400;
-      res.status(status).json({ error: message });
+      sendError(res, error);
     }
   });
 
@@ -98,27 +108,29 @@ export function createApiRouter(store: BoardStore): Router {
       store.deleteTask(request.params.id);
       res.status(204).end();
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const status = message.includes('not found') ? 404 : 400;
-      res.status(status).json({ error: message });
+      sendError(res, error);
     }
   });
 
   // Update columns
   router.put('/columns', (request, res) => {
     try {
-      const { columns } = request.body as { columns?: Column[] };
+      const { columns, moveTo } = request.body as {
+        columns?: Column[];
+        moveTo?: string;
+      };
       if (!columns || !Array.isArray(columns)) {
-        res.status(400).json({ error: 'columns must be an array' });
+        res.status(400).json({
+          error: 'columns must be an array',
+          code: 'INVALID_COLUMNS',
+        });
         return;
       }
 
-      const updated = store.updateColumns(columns);
+      const updated = store.updateColumns(columns, moveTo);
       res.json({ columns: updated });
     } catch (error) {
-      res.status(400).json({
-        error: error instanceof Error ? error.message : String(error),
-      });
+      sendError(res, error);
     }
   });
 

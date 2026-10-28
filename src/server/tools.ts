@@ -1,34 +1,97 @@
 import { type McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { BoardError } from './errors.js';
 import type { BoardStore } from './store.js';
+import type { Task } from './types.js';
 
-const taskOutputSchema = {
+const publicTaskSchema = z.object({
   id: z.string(),
   title: z.string(),
   description: z.string(),
-  column: z.string(),
+  column: z.string().describe('Name of the column the task is in'),
   priority: z
     .enum(['P0', 'P1', 'P2'])
     .describe('P0 = urgent/critical, P1 = normal (default), P2 = low priority'),
   assignee: z.string(),
+  lastActor: z
+    .string()
+    .describe('Who last changed the task (agent name, "human", or empty)'),
   createdAt: z.string(),
   updatedAt: z.string(),
-};
+});
+
+const taskOutputSchema = publicTaskSchema.shape;
+
+function toPublicTask(task: Task): z.infer<typeof publicTaskSchema> {
+  const { clientRequestId: _clientRequestId, ...rest } = task;
+  return rest;
+}
+
+const prioritySchema = z
+  .enum(['P0', 'P1', 'P2'])
+  .describe('P0 = urgent/critical, P1 = normal (default), P2 = low priority');
+
+const actorSchema = z
+  .string()
+  .max(100)
+  .optional()
+  .describe(
+    'Name recorded as the last actor for this change. Defaults to the assignee or "agent".',
+  );
+
+const expectedUpdatedAtSchema = z
+  .string()
+  .optional()
+  .describe(
+    'Optimistic concurrency guard: the task updatedAt value you last saw. The call fails with CONFLICT if the task changed since.',
+  );
+
+function toolError(error: unknown): {
+  content: Array<{ type: 'text'; text: string }>;
+  isError: true;
+} {
+  if (error instanceof BoardError) {
+    const details = error.details ? ` ${JSON.stringify(error.details)}` : '';
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Error [${error.code}]: ${error.message}${details}`,
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    content: [{ type: 'text', text: `Error [INTERNAL_ERROR]: ${message}` }],
+    isError: true,
+  };
+}
+
+function ok<T extends Record<string, unknown>>(payload: T) {
+  return {
+    content: [
+      { type: 'text' as const, text: JSON.stringify(payload, null, 2) },
+    ],
+    structuredContent: payload,
+  };
+}
 
 export function registerTools(server: McpServer, store: BoardStore): void {
-  const columnNames = store.getColumnNames();
-
   server.registerTool(
     'get_columns',
     {
       title: 'Get Columns',
       description:
-        'Get the list of kanban board columns with their task counts.',
+        'Get the current board columns with their IDs, task counts and sorting. Call this before creating or moving a task when you do not know the exact column names.',
       inputSchema: {},
       outputSchema: {
         columns: z.array(
           z.object({
-            name: z.string().describe('Column name'),
+            id: z.string().describe('Stable column ID, survives renames'),
+            name: z.string().describe('Current column name'),
             taskCount: z.number().describe('Number of tasks in the column'),
             sortBy: z
               .enum(['priority', 'created', 'updated'])
@@ -49,21 +112,42 @@ export function registerTools(server: McpServer, store: BoardStore): void {
     async () => {
       const allTasks = store.getTasks();
       const columnsWithCounts = store.getColumns().map((col) => ({
+        id: col.id,
         name: col.name,
         taskCount: allTasks.filter((t) => t.column === col.name).length,
         sortBy: col.sortBy,
         sortOrder: col.sortOrder,
       }));
-      const structuredContent = { columns: columnsWithCounts };
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(structuredContent, null, 2),
-          },
-        ],
-        structuredContent,
-      };
+      return ok({ columns: columnsWithCounts });
+    },
+  );
+
+  server.registerTool(
+    'get_task',
+    {
+      title: 'Get Task',
+      description:
+        'Get a single task by its ID, including its full description and history metadata.',
+      inputSchema: {
+        id: z.string().describe('Task ID (UUID)'),
+      },
+      outputSchema: taskOutputSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async ({ id }) => {
+      const task = store.getTask(id);
+      if (!task) {
+        return toolError(
+          new BoardError('TASK_NOT_FOUND', `Task with id "${id}" not found.`),
+        );
+      }
+
+      return ok({ ...toPublicTask(task) });
     },
   );
 
@@ -72,20 +156,15 @@ export function registerTools(server: McpServer, store: BoardStore): void {
     {
       title: 'List Tasks',
       description:
-        'List tasks on the kanban board, optionally filtered by column, priority, and assignee. Results are sorted by priority (P0 first) then by creation date (oldest first).',
+        'List tasks on the board across all columns (or one column), optionally filtered by priority and assignee. Results are sorted by priority (P0 first) then oldest first. The response reports total and hasMore, so nothing is hidden silently.',
       inputSchema: {
         column: z
           .string()
           .optional()
           .describe(
-            `Column name to filter by. Defaults to "${columnNames[0]}". Available: ${columnNames.join(', ')}`,
+            'Column name to filter by. Omit to list tasks from every column. Call get_columns for current names.',
           ),
-        priority: z
-          .enum(['P0', 'P1', 'P2'])
-          .optional()
-          .describe(
-            'Filter tasks by priority level: P0 = urgent/critical, P1 = normal, P2 = low priority',
-          ),
+        priority: prioritySchema.optional(),
         assignee: z
           .string()
           .optional()
@@ -96,10 +175,23 @@ export function registerTools(server: McpServer, store: BoardStore): void {
           .min(1)
           .max(1000)
           .optional()
-          .describe('Maximum number of tasks to return (default: 10)'),
+          .describe('Maximum number of tasks to return (default: 100)'),
+        offset: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe('Number of matching tasks to skip (default: 0)'),
       },
       outputSchema: {
-        tasks: z.array(z.object(taskOutputSchema)),
+        tasks: z.array(publicTaskSchema),
+        total: z
+          .number()
+          .describe('Number of tasks matching the filters before pagination'),
+        hasMore: z
+          .boolean()
+          .describe('Whether more matching tasks exist after this page'),
+        offset: z.number().describe('Offset used for this page'),
       },
       annotations: {
         readOnlyHint: true,
@@ -108,21 +200,19 @@ export function registerTools(server: McpServer, store: BoardStore): void {
         openWorldHint: false,
       },
     },
-    async ({ column, priority, assignee, max }) => {
-      const targetColumn = column ?? columnNames[0];
-      if (!store.getColumnNames().includes(targetColumn)) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Error: Column "${targetColumn}" does not exist. Available columns: ${store.getColumnNames().join(', ')}`,
-            },
-          ],
-          isError: true,
-        };
+    async ({ column, priority, assignee, max, offset }) => {
+      const columnNames = store.getColumnNames();
+      if (column !== undefined && !columnNames.includes(column.trim())) {
+        return toolError(
+          new BoardError(
+            'COLUMN_NOT_FOUND',
+            `Column "${column}" does not exist.`,
+            { availableColumns: columnNames },
+          ),
+        );
       }
 
-      let tasks = store.getTasks(targetColumn);
+      let tasks = store.getTasks(column?.trim());
       if (priority) {
         tasks = tasks.filter((t) => t.priority === priority);
       }
@@ -132,26 +222,28 @@ export function registerTools(server: McpServer, store: BoardStore): void {
         tasks = tasks.filter((t) => t.assignee.toLowerCase() === lowerAssignee);
       }
 
-      // Sort by priority ascending (P0 first), then by created date ascending (oldest first)
+      const columnOrder = new Map(
+        store.getColumns().map((item, index) => [item.name, index]),
+      );
       tasks.sort((a, b) => {
         const priorityCompare = a.priority.localeCompare(b.priority);
         if (priorityCompare !== 0) return priorityCompare;
+        const byColumn =
+          (columnOrder.get(a.column) ?? 0) - (columnOrder.get(b.column) ?? 0);
+        if (!column && byColumn !== 0) return byColumn;
         return a.createdAt.localeCompare(b.createdAt);
       });
 
-      const limit = max ?? 10;
-      tasks = tasks.slice(0, limit);
-
-      const structuredContent = { tasks };
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(structuredContent, null, 2),
-          },
-        ],
-        structuredContent,
-      };
+      const total = tasks.length;
+      const start = offset ?? 0;
+      const limit = max ?? 100;
+      const page = tasks.slice(start, start + limit);
+      return ok({
+        tasks: page.map((task) => toPublicTask(task)),
+        total,
+        hasMore: start + page.length < total,
+        offset: start,
+      });
     },
   );
 
@@ -159,7 +251,8 @@ export function registerTools(server: McpServer, store: BoardStore): void {
     'create_task',
     {
       title: 'Create Task',
-      description: 'Create a new task on the kanban board.',
+      description:
+        'Create a new task on the board. Call get_columns first if you do not know the column names. Pass clientRequestId to make a retry safe: repeating the same key returns the already created task instead of a duplicate.',
       inputSchema: {
         title: z
           .string()
@@ -175,19 +268,70 @@ export function registerTools(server: McpServer, store: BoardStore): void {
           .string()
           .optional()
           .describe(
-            `Column to place task in. Defaults to "${columnNames[0]}". Available: ${columnNames.join(', ')}`,
+            'Column to place the task in. Defaults to the first board column. Call get_columns for current names.',
           ),
-        priority: z
-          .enum(['P0', 'P1', 'P2'])
-          .optional()
-          .describe(
-            'Task priority: P0 = urgent/critical, P1 = normal (default), P2 = low priority',
-          ),
+        priority: prioritySchema.optional(),
         assignee: z
           .string()
           .max(100)
           .optional()
           .describe('Name of the person or agent assigned to this task'),
+        actor: actorSchema,
+        clientRequestId: z
+          .string()
+          .max(200)
+          .optional()
+          .describe(
+            'Idempotency key. Repeating a call with the same key returns the task created by the first call.',
+          ),
+      },
+      outputSchema: taskOutputSchema,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async ({
+      title,
+      description,
+      column,
+      priority,
+      assignee,
+      actor,
+      clientRequestId,
+    }) => {
+      try {
+        const task = store.createTask({
+          title,
+          description,
+          column,
+          priority,
+          assignee,
+          actor,
+          clientRequestId,
+        });
+        return ok({ ...toPublicTask(task) });
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'move_task',
+    {
+      title: 'Move Task',
+      description:
+        "Move a task to another column. Use expectedUpdatedAt to fail with CONFLICT instead of overwriting somebody else's change.",
+      inputSchema: {
+        id: z.string().describe('Task ID (UUID)'),
+        column: z
+          .string()
+          .describe('Target column name. Call get_columns for current names.'),
+        actor: actorSchema,
+        expectedUpdatedAt: expectedUpdatedAtSchema,
       },
       outputSchema: taskOutputSchema,
       annotations: {
@@ -197,69 +341,12 @@ export function registerTools(server: McpServer, store: BoardStore): void {
         openWorldHint: false,
       },
     },
-    async ({ title, description, column, priority, assignee }) => {
+    async ({ id, column, actor, expectedUpdatedAt }) => {
       try {
-        const task = store.createTask(
-          title,
-          description,
-          column,
-          priority,
-          assignee,
-        );
-        return {
-          content: [{ type: 'text', text: JSON.stringify(task, null, 2) }],
-          structuredContent: task,
-        };
+        const task = store.moveTask(id, column, { actor, expectedUpdatedAt });
+        return ok({ ...toPublicTask(task) });
       } catch (error) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Error: ${error instanceof Error ? error.message : String(error)}`,
-            },
-          ],
-          isError: true,
-        };
-      }
-    },
-  );
-
-  server.registerTool(
-    'move_task',
-    {
-      title: 'Move Task',
-      description: 'Move an existing task to a different column.',
-      inputSchema: {
-        id: z.string().describe('Task ID (UUID)'),
-        column: z
-          .string()
-          .describe(`Target column. Available: ${columnNames.join(', ')}`),
-      },
-      outputSchema: taskOutputSchema,
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: false,
-      },
-    },
-    async ({ id, column }) => {
-      try {
-        const task = store.moveTask(id, column);
-        return {
-          content: [{ type: 'text', text: JSON.stringify(task, null, 2) }],
-          structuredContent: task,
-        };
-      } catch (error) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Error: ${error instanceof Error ? error.message : String(error)}`,
-            },
-          ],
-          isError: true,
-        };
+        return toolError(error);
       }
     },
   );
@@ -269,7 +356,7 @@ export function registerTools(server: McpServer, store: BoardStore): void {
     {
       title: 'Update Task',
       description:
-        "Update a task's title, description, priority, and/or assignee.",
+        "Update a task's title, description, priority, assignee and/or column in one atomic operation. Use expectedUpdatedAt to fail with CONFLICT instead of overwriting somebody else's change.",
       inputSchema: {
         id: z.string().describe('Task ID (UUID)'),
         title: z.string().min(1).max(200).optional().describe('New task title'),
@@ -278,48 +365,50 @@ export function registerTools(server: McpServer, store: BoardStore): void {
           .max(4000)
           .optional()
           .describe('New task description'),
-        priority: z
-          .enum(['P0', 'P1', 'P2'])
-          .optional()
-          .describe(
-            'New task priority: P0 = urgent/critical, P1 = normal, P2 = low priority',
-          ),
+        priority: prioritySchema.optional(),
         assignee: z
           .string()
           .max(100)
           .optional()
           .describe('New assignee name (empty string to unassign)'),
+        column: z
+          .string()
+          .optional()
+          .describe('New column name. Call get_columns for current names.'),
+        actor: actorSchema,
+        expectedUpdatedAt: expectedUpdatedAtSchema,
       },
       outputSchema: taskOutputSchema,
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
-        idempotentHint: true,
+        idempotentHint: false,
         openWorldHint: false,
       },
     },
-    async ({ id, title, description, priority, assignee }) => {
+    async ({
+      id,
+      title,
+      description,
+      priority,
+      assignee,
+      column,
+      actor,
+      expectedUpdatedAt,
+    }) => {
       try {
         const task = store.updateTask(id, {
           title,
           description,
           priority,
           assignee,
+          column,
+          actor,
+          expectedUpdatedAt,
         });
-        return {
-          content: [{ type: 'text', text: JSON.stringify(task, null, 2) }],
-          structuredContent: task,
-        };
+        return ok({ ...toPublicTask(task) });
       } catch (error) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Error: ${error instanceof Error ? error.message : String(error)}`,
-            },
-          ],
-          isError: true,
-        };
+        return toolError(error);
       }
     },
   );
@@ -329,7 +418,7 @@ export function registerTools(server: McpServer, store: BoardStore): void {
     {
       title: 'Delete Task',
       description:
-        'Permanently delete a task from the kanban board. Should only be used in case of errorneous or test tasks, as this action cannot be undone!',
+        'Permanently delete a task from the board. Use only for erroneous or test tasks: this cannot be undone.',
       inputSchema: {
         id: z.string().describe('Task ID (UUID) to delete'),
       },
@@ -339,35 +428,16 @@ export function registerTools(server: McpServer, store: BoardStore): void {
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
-        idempotentHint: true,
+        idempotentHint: false,
         openWorldHint: false,
       },
     },
     async ({ id }) => {
       try {
         store.deleteTask(id);
-        const structuredContent = {
-          message: `Task "${id}" has been deleted.`,
-        };
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(structuredContent, null, 2),
-            },
-          ],
-          structuredContent,
-        };
+        return ok({ message: `Task "${id}" has been deleted.` });
       } catch (error) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Error: ${error instanceof Error ? error.message : String(error)}`,
-            },
-          ],
-          isError: true,
-        };
+        return toolError(error);
       }
     },
   );
