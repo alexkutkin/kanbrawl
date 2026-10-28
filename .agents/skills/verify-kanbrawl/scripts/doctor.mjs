@@ -53,7 +53,7 @@ if (owners.length === 0) {
 
 let board;
 try {
-  board = await fetchBoard(instance.hostUrl);
+  board = await fetchBoard(instance.hostUrl, instance.token);
   ok(`GET ${instance.hostUrl}/api/board -> 200`);
 } catch (error) {
   bad(`board API unreachable: ${error.message}`);
@@ -117,6 +117,7 @@ if (copied.status !== 0) {
       'node',
       `${CONTAINER_ROOT}/probe-url.mjs`,
       url,
+      instance.token ?? '',
     ]);
     const output = (result.stdout ?? '').trim();
     if (result.status === 0 && output.startsWith('OK')) {

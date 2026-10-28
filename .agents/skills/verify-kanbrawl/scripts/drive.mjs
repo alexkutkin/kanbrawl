@@ -78,6 +78,8 @@ const exec = docker(
     `KB_OUT=${containerRunDir}`,
     '-e',
     `KB_PW_ROOT=${CONTAINER_MODULE_ROOT}`,
+    '-e',
+    `KB_TOKEN=${instance.token ?? ''}`,
     containerName,
     'node',
     `${containerRunDir}/runner.mjs`,
@@ -107,7 +109,7 @@ const report = JSON.parse(readFileSync(reportFile, 'utf8'));
 const stored = JSON.parse(readFileSync(instance.dataFile, 'utf8'));
 let board;
 try {
-  board = await fetchBoard(instance.hostUrl);
+  board = await fetchBoard(instance.hostUrl, instance.token);
 } catch (error) {
   fail(`board API unreachable after the run: ${error.message}`);
 }

@@ -36,6 +36,6 @@ Preconditions:
 
 - `+ Add column` appends at the end (after `Done`); the scenario reorders it explicitly. Do not assume the new column lands where you want.
 - `Save` is disabled while any column name is empty or duplicated; fill new rows before saving.
-- Renaming a column removes the old name, and tasks in a removed column are moved to the first remaining column. Seed tasks in a column that keeps its name if you want to verify sorting, as this scenario does with `Todo`.
+- Renaming a column rewrites the tasks' `column` values to the new name; tasks stay put. Tasks in a removed (not renamed) column move to the chosen destination column, which the app asks for when that column held tasks. Seed tasks in a column that keeps its name if you want to verify sorting, as this scenario does with `Todo`.
 - Column changes go through `PUT /api/columns` and the app's column store, not through the card UI; assert both the rendered order and the API order.
-- The modal is a plain overlay inside the component's shadow root, not a native `<dialog>`; target `.overlay .modal` handles.
+- The modal is a native `<dialog class="modal">` inside the component's shadow root, opened with `showModal()`; target `dialog.modal` handles (`.modal` still matches). Assert on `element.open`, not on existence.

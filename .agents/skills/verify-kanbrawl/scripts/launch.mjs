@@ -13,6 +13,7 @@ import {
   PORT,
   REPO_ROOT,
   SANDBOX_IMAGE,
+  VERIFY_TOKEN,
   containerBaseUrl,
   docker,
   dockerContainerRunning,
@@ -50,7 +51,18 @@ resetRunDirectory();
 const logFd = openSync(LOG_FILE, 'w');
 const child = spawn(
   process.execPath,
-  [join(REPO_ROOT, 'bin', 'cli.js'), 'start', '--port', String(PORT)],
+  [
+    join(REPO_ROOT, 'bin', 'cli.js'),
+    'start',
+    '--port',
+    String(PORT),
+    // The sandbox reaches the host, so bind beyond loopback; the token keeps
+    // the throwaway board private to this run.
+    '--host',
+    '0.0.0.0',
+    '--token',
+    VERIFY_TOKEN,
+  ],
   {
     cwd: DATA_DIR,
     detached: true,
@@ -148,7 +160,7 @@ async function waitForReady(pid) {
     if (match) {
       const port = Number(match[1]);
       try {
-        const board = await fetchBoard(hostBaseUrl(port));
+        const board = await fetchBoard(hostBaseUrl(port), VERIFY_TOKEN);
         return { port, board };
       } catch (error) {
         lastError = error.message;
@@ -169,6 +181,7 @@ try {
   const instance = {
     pid: child.pid,
     port,
+    token: VERIFY_TOKEN,
     hostUrl: hostBaseUrl(port),
     containerUrl: containerBaseUrl(port),
     dataDir: DATA_DIR,
@@ -192,6 +205,7 @@ try {
 
   ok(`Kanbrawl verify instance running on ${instance.hostUrl} (pid ${child.pid})`);
   ok(`Board file: ${instance.dataFile}`);
+  ok(`Access token: ${instance.token}`);
   ok(`Columns: ${names}`);
   ok(
     `${container.owned ? 'disposable' : 'reused'} sandbox: ${container.name}` +

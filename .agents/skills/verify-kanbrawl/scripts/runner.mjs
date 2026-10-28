@@ -16,6 +16,7 @@ const BASE_URL = process.env.KB_BASE_URL;
 const FEATURE = process.env.KB_FEATURE;
 const OUT = process.env.KB_OUT;
 const MODULE_ROOT = process.env.KB_PW_ROOT ?? '/app';
+const TOKEN = process.env.KB_TOKEN ?? '';
 
 if (!BASE_URL || !FEATURE || !OUT) {
   console.error('KB_BASE_URL, KB_FEATURE and KB_OUT are required');
@@ -99,9 +100,12 @@ async function waitFor(fn, { timeout = 10_000, interval = 100, label = 'conditio
 }
 
 async function api(method, path, body) {
+  const headers = {};
+  if (body !== undefined) headers['content-type'] = 'application/json';
+  if (TOKEN) headers['x-kanbrawl-token'] = TOKEN;
   const response = await fetch(`${BASE_URL}${path}`, {
     method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(10_000),
   });
@@ -184,8 +188,17 @@ async function tasksIn(columnName) {
 }
 
 async function openBoard() {
-  await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
-  await page.locator('.status-dot.connected').waitFor({ timeout: 10_000 });
+  const url = TOKEN
+    ? `${BASE_URL}/?token=${encodeURIComponent(TOKEN)}`
+    : BASE_URL;
+  await page.goto(url, { waitUntil: 'domcontentloaded' });
+  await page.locator('.status-dot.online').waitFor({ timeout: 10_000 });
+}
+
+async function confirmDelete() {
+  const dialog = page.locator('dialog.confirm');
+  await dialog.waitFor({ state: 'visible' });
+  await dialog.locator('.btn-danger').click();
 }
 
 function stamp() {
@@ -312,6 +325,7 @@ async function scenarioTasks() {
     const card = await task(editedTitle);
     await card.hover();
     await card.locator('button[title="Delete"]').click();
+    await confirmDelete();
     await waitFor(async () => (await findTaskByTitle(editedTitle)) === undefined, {
       label: 'task to disappear from the API',
     });
