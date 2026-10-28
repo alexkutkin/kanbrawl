@@ -3,7 +3,15 @@ import * as net from 'node:net';
 import * as cp from 'node:child_process';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
+import {
+  MCP_TARGETS,
+  ensureAgentsSection,
+  ensureBoardFile,
+  writeMcpConfig,
+  type McpTarget,
+} from '../../shared/onboarding.js';
 import { KanbrawlApiClient, type ConnectionState } from './api.js';
 import { BoardTreeProvider, type BoardItem } from './board-provider.js';
 
@@ -228,75 +236,6 @@ function updateConnectionIndicator(state: ConnectionState): void {
   }
 }
 
-// ── Init configuration ──────────────────────────────────────────────
-
-type McpToolConfig = {
-  name: string;
-  configPath: string;
-  serversKey: string;
-  entry: Record<string, unknown>;
-};
-
-const STDIO_ARGS = ['-y', 'kanbrawl', 'start', '--stdio'];
-
-const MCP_TOOL_CONFIGS: McpToolConfig[] = [
-  {
-    name: 'VS Code / GitHub Copilot',
-    configPath: '.vscode/mcp.json',
-    serversKey: 'servers',
-    entry: { type: 'stdio', command: 'npx', args: STDIO_ARGS },
-  },
-  {
-    name: 'Claude Code',
-    configPath: '.mcp.json',
-    serversKey: 'mcpServers',
-    entry: { command: 'npx', args: STDIO_ARGS },
-  },
-  {
-    name: 'Cursor',
-    configPath: '.cursor/mcp.json',
-    serversKey: 'mcpServers',
-    entry: { command: 'npx', args: STDIO_ARGS },
-  },
-  {
-    name: 'Gemini CLI',
-    configPath: '.gemini/settings.json',
-    serversKey: 'mcpServers',
-    entry: { command: 'npx', args: STDIO_ARGS },
-  },
-  {
-    name: 'Windsurf',
-    configPath: '.windsurf/mcp.json',
-    serversKey: 'mcpServers',
-    entry: { command: 'npx', args: STDIO_ARGS },
-  },
-];
-
-const DEFAULT_BOARD = {
-  columns: [
-    { name: 'Todo', sortBy: 'priority', sortOrder: 'asc' },
-    { name: 'In progress', sortBy: 'created', sortOrder: 'asc' },
-    { name: 'Blocked', sortBy: 'created', sortOrder: 'asc' },
-    { name: 'Done', sortBy: 'updated', sortOrder: 'desc' },
-  ],
-  tasks: [] as unknown[],
-};
-
-const AGENTS_MD_SECTION = `
-## Task Management
-
-Use the Kanbrawl MCP tools for task management when working on this project.
-
-### Workflow
-
-- When building a plan, include task creation in it
-- Check existing tasks with \`list_tasks\` before creating to avoid duplicates
-- Always reload tasks with \`list_tasks\` before starting work on a task to get the latest updates
-- Set your name as assignee when you start working on a task
-- Move tasks between columns with \`move_task\` to track progress
-- Proceed with task execution one at a time, till it's done or blocked then move to the next one
-`;
-
 // ── Board setup ─────────────────────────────────────────────────────
 
 async function setupBoard(context: vscode.ExtensionContext): Promise<void> {
@@ -415,10 +354,10 @@ export async function activate(
         return;
       }
 
-      type ToolItem = vscode.QuickPickItem & { config: McpToolConfig };
-      const items: ToolItem[] = MCP_TOOL_CONFIGS.map((c) => ({
-        label: c.name,
-        config: c,
+      type ToolItem = vscode.QuickPickItem & { target: McpTarget };
+      const items: ToolItem[] = MCP_TARGETS.map((target) => ({
+        label: target.name,
+        target,
       }));
 
       const selected = await vscode.window.showQuickPick(items, {
@@ -431,61 +370,12 @@ export async function activate(
         return;
       }
 
-      // Create kanbrawl.json if needed
-      const boardPath = path.join(root, 'kanbrawl.json');
-      if (!fs.existsSync(boardPath)) {
-        fs.writeFileSync(
-          boardPath,
-          JSON.stringify(DEFAULT_BOARD, null, 2) + '\n',
-        );
-      }
-
-      // Write MCP config files
+      ensureBoardFile(root, randomUUID);
       for (const item of selected) {
-        const { config } = item;
-        const fullPath = path.join(root, config.configPath);
-        const dir = path.dirname(fullPath);
-
-        if (!fs.existsSync(dir)) {
-          fs.mkdirSync(dir, { recursive: true });
-        }
-
-        let existing: Record<string, unknown> = {};
-        if (fs.existsSync(fullPath)) {
-          try {
-            existing = JSON.parse(fs.readFileSync(fullPath, 'utf8')) as Record<
-              string,
-              unknown
-            >;
-          } catch {}
-        }
-
-        const servers =
-          (existing[config.serversKey] as Record<string, unknown>) ?? {};
-        servers.kanbrawl = config.entry;
-        existing[config.serversKey] = servers;
-
-        fs.writeFileSync(fullPath, JSON.stringify(existing, null, 2) + '\n');
+        writeMcpConfig(root, item.target);
       }
 
-      // Update AGENTS.md
-      const agentsPath = path.join(root, 'AGENTS.md');
-      if (fs.existsSync(agentsPath)) {
-        const content = fs.readFileSync(agentsPath, 'utf8');
-        if (!content.includes('Kanbrawl MCP tools')) {
-          fs.writeFileSync(
-            agentsPath,
-            content.trimEnd() + '\n' + AGENTS_MD_SECTION,
-            'utf8',
-          );
-        }
-      } else {
-        fs.writeFileSync(
-          agentsPath,
-          `# AGENTS.md\n${AGENTS_MD_SECTION}`,
-          'utf8',
-        );
-      }
+      ensureAgentsSection(root);
 
       void vscode.window.showInformationMessage(
         'Kanbrawl initialized successfully!',

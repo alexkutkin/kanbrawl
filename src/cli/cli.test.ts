@@ -1,17 +1,10 @@
-import {
-  mkdtempSync,
-  rmSync,
-  readFileSync,
-  existsSync,
-  writeFileSync,
-} from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import process from 'node:process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { BoardStore } from '../server/store.js';
 import { taskAction } from './commands/task.js';
-import { writeConfigFile, updateAgentsMd } from './commands/init.js';
 
 // --- Task command tests ---
 describe('task command', () => {
@@ -92,96 +85,5 @@ describe('task command', () => {
     taskAction('Does not exist', { update: true, priority: '1' });
     expect(process.exitCode).toBe(1);
     process.exitCode = originalExitCode;
-  });
-});
-
-// --- Init command helper tests ---
-describe('init helpers', () => {
-  let dir: string;
-
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'kanbrawl-init-test-'));
-  });
-
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  describe('writeConfigFile', () => {
-    it('creates a new config file with kanbrawl entry', () => {
-      writeConfigFile(
-        {
-          name: 'Test Tool',
-          configPath: '.test/mcp.json',
-          serversKey: 'mcpServers',
-          generateEntry: () => ({ command: 'npx', args: ['kanbrawl'] }),
-        },
-        dir,
-      );
-
-      const filePath = join(dir, '.test/mcp.json');
-      expect(existsSync(filePath)).toBe(true);
-
-      const data = JSON.parse(readFileSync(filePath, 'utf8'));
-      expect(data.mcpServers.kanbrawl).toEqual({
-        command: 'npx',
-        args: ['kanbrawl'],
-      });
-    });
-
-    it('merges into an existing config file', () => {
-      const filePath = join(dir, 'mcp.json');
-      writeFileSync(
-        filePath,
-        JSON.stringify({
-          mcpServers: { other: { command: 'other-tool' } },
-        }),
-      );
-
-      writeConfigFile(
-        {
-          name: 'Test',
-          configPath: 'mcp.json',
-          serversKey: 'mcpServers',
-          generateEntry: () => ({ command: 'npx', args: ['kanbrawl'] }),
-        },
-        dir,
-      );
-
-      const data = JSON.parse(readFileSync(filePath, 'utf8'));
-      expect(data.mcpServers.other).toEqual({ command: 'other-tool' });
-      expect(data.mcpServers.kanbrawl).toEqual({
-        command: 'npx',
-        args: ['kanbrawl'],
-      });
-    });
-  });
-
-  describe('updateAgentsMd', () => {
-    it('creates AGENTS.md when it does not exist', () => {
-      updateAgentsMd(dir);
-      const content = readFileSync(join(dir, 'AGENTS.md'), 'utf8');
-      expect(content).toContain('# AGENTS.md');
-      expect(content).toContain('Kanbrawl MCP tools');
-      expect(content).toContain('list_tasks');
-    });
-
-    it('appends to existing AGENTS.md', () => {
-      writeFileSync(join(dir, 'AGENTS.md'), '# My Project\n\nExisting content');
-      updateAgentsMd(dir);
-      const content = readFileSync(join(dir, 'AGENTS.md'), 'utf8');
-      expect(content).toContain('# My Project');
-      expect(content).toContain('Existing content');
-      expect(content).toContain('Kanbrawl MCP tools');
-    });
-
-    it('skips if Kanbrawl section already exists', () => {
-      const original =
-        '# Project\n\nUse the Kanbrawl MCP tools\n\nAlready here';
-      writeFileSync(join(dir, 'AGENTS.md'), original);
-      updateAgentsMd(dir);
-      const content = readFileSync(join(dir, 'AGENTS.md'), 'utf8');
-      expect(content).toBe(original);
-    });
   });
 });
