@@ -59,7 +59,7 @@ To launch the web UI and HTTP MCP server:
 npx kanbrawl start
 ```
 
-Open [http://localhost:8431](http://localhost:8431) to view the board. The server listens on all interfaces and logs the network address, so other devices on your local network can open it too.
+Open [http://localhost:8431](http://localhost:8431) to view the board. By default the server binds to loopback only. To share the board on your local network, start it with `--host 0.0.0.0`; Kanbrawl then generates an access token and prints the URL to open:
 
 ### Run with Docker
 
@@ -67,10 +67,12 @@ Open [http://localhost:8431](http://localhost:8431) to view the board. The serve
 docker compose up --build -d
 ```
 
-The board is available at [http://localhost:8431](http://localhost:8431) and the MCP endpoint at `http://localhost:8431/mcp`, or at `http://<your-ip>:8431` from other devices on your local network. Board data is persisted in a host folder bind-mounted at `/data` (configured in `docker-compose.yml`).
+The board is available at [http://localhost:8431](http://localhost:8431) and the MCP endpoint at `http://localhost:8431/mcp`. Board data is persisted in a host folder bind-mounted at `/data` (configured in `docker-compose.yml`).
+
+Because the container must listen beyond loopback, Kanbrawl generates an access token on start. Read it from `docker compose logs kanbrawl`, then open `http://localhost:8431/?token=<token>` once; the browser keeps it in a cookie. Set `KB_TOKEN` in the compose environment to use a stable token instead. Agents calling the API or MCP endpoint pass the token as the `x-kanbrawl-token` header.
 
 > [!WARNING]
-> The board has no authentication, so anyone who can reach the port can view and edit tasks. If other devices cannot connect, allow inbound TCP port 8431 in the host firewall.
+> Keep the token private. Anyone who has it can view and edit the board. The server rejects requests whose `Origin` is not loopback, the same host, or listed via `--allow-origin`. If other devices cannot connect, allow inbound TCP port 8431 in the host firewall.
 
 ### Manual MCP Configuration
 
@@ -111,12 +113,15 @@ kanbrawl                    # Start HTTP server (default)
 kanbrawl start              # Start HTTP server
 kanbrawl start --stdio      # Start MCP server over stdio transport
 kanbrawl start -p 9000      # Start HTTP server on port 9000
+kanbrawl start --host 0.0.0.0  # Expose on the local network (token required)
 kanbrawl task "title"       # Create a task
 kanbrawl task "title" -u    # Update existing task by title match
 kanbrawl init               # Interactive setup for AI tools
 kanbrawl --version          # Show version
 kanbrawl --help             # Show help
 ```
+
+`start` options for HTTP mode: `-p, --port`, `-H, --host` (defaults to `127.0.0.1`, or `0.0.0.0` inside a container), `--token` (or `KB_TOKEN`), and `--allow-origin <origin…>` for additional browser origins.
 
 ### `task` command
 
@@ -149,7 +154,10 @@ All configuration and data is stored in `kanbrawl.json`, auto-created on first r
 
 ```json
 {
-  "columns": ["Todo", "In progress", "Blocked", "Done"],
+  "columns": [
+    { "id": "…", "name": "Todo", "sortBy": "priority", "sortOrder": "asc" },
+    { "id": "…", "name": "In progress", "sortBy": "created", "sortOrder": "asc" }
+  ],
   "theme": "dark",
   "tasks": []
 }
@@ -157,12 +165,12 @@ All configuration and data is stored in `kanbrawl.json`, auto-created on first r
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `columns` | `string[]` | `["Todo", "In progress", "Blocked", "Done"]` | Column names and order |
+| `columns` | `Column[]` | Todo, In progress, Blocked, Done | Column identities, names, order and sorting (`priority`, `created` or `updated`) |
 | `theme` | `"light"` \| `"dark"` | System preference | UI theme override |
 | `tasks` | `Task[]` | `[]` | Task objects (managed by the app) |
 
 > [!TIP]
-> Edit the `columns` array to customize your board layout. Changes take effect on restart.
+> Column names are what agents pass to MCP tools. Rename a column through the board's settings (⚙) to keep task references consistent; editing the JSON directly is not recommended.
 
 ## MCP Tools
 
@@ -171,11 +179,14 @@ All tools are available via the `/mcp` endpoint.
 | Tool | Description | Read-only |
 |------|-------------|-----------|
 | `get_columns` | Get columns with task counts | ✅ |
-| `list_tasks` | List tasks, filtered by column (default: first) and priority | ✅ |
-| `create_task` | Create a new task (with priority, assignee) | ❌ |
+| `get_task` | Get one task by id | ✅ |
+| `list_tasks` | List tasks across all columns, with `total`, `hasMore` and `offset` | ✅ |
+| `create_task` | Create a new task (with priority, assignee, `clientRequestId`) | ❌ |
 | `move_task` | Move a task to a different column | ❌ |
-| `update_task` | Update task fields (title, description, priority, assignee) | ❌ |
+| `update_task` | Update task fields (title, description, column, priority, assignee) | ❌ |
 | `delete_task` | Delete a task | ❌ |
+
+Mutations accept `actor` so the board can show who last changed a task. Pass `expectedUpdatedAt` (or `expectedVersion` on `move_task`) to turn a lost update into a `CONFLICT` error instead of silently overwriting another agent's change.
 
 ## Architecture
 
