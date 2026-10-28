@@ -7,6 +7,7 @@ export type SortBy = 'priority' | 'created' | 'updated';
 export type SortOrder = 'asc' | 'desc';
 
 export type Column = {
+  id: string;
   name: string;
   sortBy: SortBy;
   sortOrder: SortOrder;
@@ -19,6 +20,8 @@ export type Task = {
   column: string;
   priority: Priority;
   assignee: string;
+  lastActor: string;
+  clientRequestId?: string;
   createdAt: string;
   updatedAt: string;
 };
