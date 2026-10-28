@@ -20,14 +20,6 @@ type ResultCallbacks = {
   reject?: (message: string) => void;
 };
 
-type CreateTaskDetail = {
-  title: string;
-  description: string;
-  column: string;
-  priority?: string;
-  assignee?: string;
-} & ResultCallbacks;
-
 type UpdateTaskDetail = {
   id: string;
   title?: string;
@@ -44,12 +36,16 @@ type UpdateColumnsDetail = {
   moveTo?: string;
 } & ResultCallbacks;
 
-type DetailEdit = {
+type TaskFields = {
   title: string;
   description: string;
   priority: Priority;
   assignee: string;
 };
+
+type DetailEdit = TaskFields;
+
+type CreateDraft = TaskFields & { column: string };
 
 type ErrorState = { message: string; retry?: () => void };
 
@@ -243,6 +239,7 @@ export class KanbrawlApp extends LitElement {
   @state() private theme: Theme = 'dark';
   @state() private notice: string | undefined;
   @state() private selectedTaskId: string | undefined;
+  @state() private createDraft: CreateDraft | undefined;
   @state() private detailEdit: DetailEdit | undefined;
   @state() private detailPending = false;
   @state() private detailError: string | undefined;
@@ -1025,7 +1022,7 @@ export class KanbrawlApp extends LitElement {
 
     .detail-edit-form textarea {
       resize: vertical;
-      min-height: 120px;
+      min-height: 390px;
       line-height: 1.5;
     }
 
@@ -1475,6 +1472,7 @@ export class KanbrawlApp extends LitElement {
     if (id === this.selectedTaskId) return;
 
     this.selectedTaskId = id;
+    this.createDraft = undefined;
     this.detailEdit = undefined;
     this.detailError = undefined;
 
@@ -1510,6 +1508,7 @@ export class KanbrawlApp extends LitElement {
 
   private openTask(id: string) {
     if (this.selectedTaskId === id) return;
+    this.createDraft = undefined;
     this.detailEdit = undefined;
     this.detailError = undefined;
     this.selectedTaskId = id;
@@ -1522,6 +1521,29 @@ export class KanbrawlApp extends LitElement {
 
   private handleViewTask(e: CustomEvent<{ task: Task }>) {
     this.openTask(e.detail.task.id);
+  }
+
+  private openCreate(column: string) {
+    this.selectedTaskId = undefined;
+    this.detailEdit = undefined;
+    this.detailError = undefined;
+    this.detailPending = false;
+    this.createDraft = {
+      column,
+      title: '',
+      description: '',
+      priority: 'P1',
+      assignee: '',
+    };
+  }
+
+  private handleCreateRequest(e: CustomEvent<{ column: string }>) {
+    this.openCreate(e.detail.column);
+  }
+
+  private handleEditRequest(e: CustomEvent<{ task: Task }>) {
+    this.openTask(e.detail.task.id);
+    void this.startDetailEdit();
   }
 
   // --- Dialogs ---
@@ -1543,10 +1565,16 @@ export class KanbrawlApp extends LitElement {
   private syncDialogs() {
     const detail = this.detailDialog;
     if (detail) {
-      if (this.currentTask) {
+      if (this.currentTask ?? this.createDraft) {
         if (!detail.open) {
           detail.showModal();
-          detail.querySelector<HTMLElement>('.detail-close')?.focus();
+          const initial =
+            (this.createDraft ?? this.detailEdit)
+              ? detail.querySelector<HTMLInputElement>(
+                  '.detail-edit-form input',
+                )
+              : detail.querySelector<HTMLElement>('.detail-close');
+          initial?.focus();
         }
       } else if (detail.open) {
         detail.close();
@@ -1577,6 +1605,7 @@ export class KanbrawlApp extends LitElement {
 
   private handleDetailClose() {
     this.selectedTaskId = undefined;
+    this.createDraft = undefined;
     this.detailEdit = undefined;
     this.detailError = undefined;
     this.detailPending = false;
@@ -1584,6 +1613,8 @@ export class KanbrawlApp extends LitElement {
   }
 
   private handleDetailBackdrop(e: MouseEvent) {
+    if (this.detailPending) return;
+
     const dialog = e.currentTarget as HTMLDialogElement;
     if (e.target !== dialog) return;
 
@@ -1619,22 +1650,35 @@ export class KanbrawlApp extends LitElement {
 
   // --- Task mutations ---
 
-  private async handleCreateTask(e: CustomEvent<CreateTaskDetail>) {
-    const { resolve, reject, ...fields } = e.detail;
+  private async saveCreate() {
+    const draft = this.createDraft;
+    if (!draft || this.detailPending) return;
+
+    const title = draft.title.trim();
+    if (!title) {
+      this.detailError = 'Title is required.';
+      return;
+    }
+
+    this.detailPending = true;
+    this.detailError = undefined;
     try {
-      const task = await createTask({ ...fields, actor: 'web' });
+      const task = await createTask({
+        title,
+        description: draft.description,
+        column: draft.column,
+        priority: draft.priority,
+        assignee: draft.assignee.trim(),
+        actor: 'web',
+      });
       this.upsertTask(task);
-      resolve?.();
+      this.createDraft = undefined;
+      this.detailPending = false;
+      this.closeDetailPanel();
       this.clearError();
     } catch (error) {
-      if (reject) {
-        reject(this.message(error));
-      } else {
-        this.setError(this.message(error), async () => {
-          const task = await createTask({ ...fields, actor: 'web' });
-          this.upsertTask(task);
-        });
-      }
+      this.detailPending = false;
+      this.detailError = this.message(error);
     }
   }
 
@@ -1887,57 +1931,60 @@ export class KanbrawlApp extends LitElement {
     `;
   }
 
-  private renderDetailEditor(task: Task, edit: DetailEdit) {
+  private renderTaskForm(
+    fields: TaskFields,
+    options: {
+      submitLabel: string;
+      pendingLabel: string;
+      onChange: (patch: Partial<TaskFields>) => void;
+      onSubmit: () => void;
+      onCancel: () => void;
+    },
+  ) {
     return html`
       <form
         class="detail-edit-form"
         @submit=${(e: Event) => {
           e.preventDefault();
-          void this.saveDetailEdit();
+          options.onSubmit();
         }}
       >
-        <label for="detail-edit-title">Title</label>
+        <label for="task-form-title">Title</label>
         <input
-          id="detail-edit-title"
+          id="task-form-title"
           type="text"
           maxlength="200"
-          .value=${edit.title}
+          placeholder="Task title"
+          .value=${fields.title}
           ?disabled=${this.detailPending}
           @input=${(e: InputEvent) => {
-            if (!this.detailEdit) return;
-            this.detailEdit = {
-              ...this.detailEdit,
-              title: (e.target as HTMLInputElement).value,
-            };
+            options.onChange({ title: (e.target as HTMLInputElement).value });
           }}
         />
-        <label for="detail-edit-description">Description</label>
+        <label for="task-form-description">Description</label>
         <textarea
-          id="detail-edit-description"
+          id="task-form-description"
           maxlength="4000"
-          .value=${edit.description}
+          placeholder="Description (optional)"
+          .value=${fields.description}
           ?disabled=${this.detailPending}
           @input=${(e: InputEvent) => {
-            if (!this.detailEdit) return;
-            this.detailEdit = {
-              ...this.detailEdit,
+            options.onChange({
               description: (e.target as HTMLTextAreaElement).value,
-            };
+            });
           }}
         ></textarea>
         <div class="detail-edit-row">
-          <label for="detail-edit-priority">
+          <label for="task-form-priority">
             Priority
             <select
-              id="detail-edit-priority"
-              .value=${edit.priority}
+              id="task-form-priority"
+              .value=${fields.priority}
               ?disabled=${this.detailPending}
               @change=${(e: Event) => {
-                if (!this.detailEdit) return;
-                this.detailEdit = {
-                  ...this.detailEdit,
+                options.onChange({
                   priority: (e.target as HTMLSelectElement).value as Priority,
-                };
+                });
               }}
             >
               <option value="P0">P0 — Critical</option>
@@ -1945,21 +1992,19 @@ export class KanbrawlApp extends LitElement {
               <option value="P2">P2 — Low</option>
             </select>
           </label>
-          <label for="detail-edit-assignee">
+          <label for="task-form-assignee">
             Assignee
             <input
-              id="detail-edit-assignee"
+              id="task-form-assignee"
               type="text"
               maxlength="100"
               placeholder="Name (optional)"
-              .value=${edit.assignee}
+              .value=${fields.assignee}
               ?disabled=${this.detailPending}
               @input=${(e: InputEvent) => {
-                if (!this.detailEdit) return;
-                this.detailEdit = {
-                  ...this.detailEdit,
+                options.onChange({
                   assignee: (e.target as HTMLInputElement).value,
-                };
+                });
               }}
             />
           </label>
@@ -1971,20 +2016,66 @@ export class KanbrawlApp extends LitElement {
           <button
             type="submit"
             class="btn-primary"
-            ?disabled=${this.detailPending || !edit.title.trim()}
+            ?disabled=${this.detailPending || !fields.title.trim()}
           >
-            ${this.detailPending ? 'Saving…' : 'Save'}
+            ${this.detailPending ? options.pendingLabel : options.submitLabel}
           </button>
           <button
             type="button"
             class="btn-secondary"
             ?disabled=${this.detailPending}
-            @click=${this.cancelDetailEdit}
+            @click=${options.onCancel}
           >
             Cancel
           </button>
         </div>
       </form>
+    `;
+  }
+
+  private renderComposer(draft: CreateDraft) {
+    return html`
+      <div class="detail-layout">
+        <div class="detail-main">
+          ${this.renderTaskForm(draft, {
+            submitLabel: 'Add task',
+            pendingLabel: 'Adding…',
+            onChange: (patch) => {
+              if (!this.createDraft) return;
+              this.createDraft = { ...this.createDraft, ...patch };
+            },
+            onSubmit: () => {
+              void this.saveCreate();
+            },
+            onCancel: () => {
+              this.closeDetailPanel();
+            },
+          })}
+        </div>
+        <aside class="detail-sidebar" aria-label="New task placement">
+          <h3 class="detail-section-label">Details</h3>
+          <div class="detail-move">
+            <label for="task-form-column">Column</label>
+            <select
+              id="task-form-column"
+              ?disabled=${this.detailPending}
+              .value=${draft.column}
+              @change=${(e: Event) => {
+                if (!this.createDraft) return;
+                this.createDraft = {
+                  ...this.createDraft,
+                  column: (e.target as HTMLSelectElement).value,
+                };
+              }}
+            >
+              ${this.board.columns.map(
+                (column) =>
+                  html`<option value=${column.name}>${column.name}</option>`,
+              )}
+            </select>
+          </div>
+        </aside>
+      </div>
     `;
   }
 
@@ -2091,19 +2182,24 @@ export class KanbrawlApp extends LitElement {
 
   private renderDetailDialog() {
     const task = this.currentTask;
+    const draft = this.createDraft;
     const edit = this.detailEdit;
+    const heading = draft ? 'New task' : edit ? 'Edit task' : 'Task detail';
     return html`
       <dialog
         class="task-detail"
         aria-labelledby="detail-dialog-title"
         @click=${this.handleDetailBackdrop}
         @close=${this.handleDetailClose}
+        @cancel=${(e: Event) => {
+          if (this.detailPending) e.preventDefault();
+        }}
       >
-        ${task
+        ${(draft ?? task)
           ? html`
               <div class="detail-header">
                 <span class="detail-header-title" id="detail-dialog-title"
-                  >Task detail</span
+                  >${heading}</span
                 >
                 <button
                   class="detail-close"
@@ -2115,16 +2211,39 @@ export class KanbrawlApp extends LitElement {
                 </button>
               </div>
               <div class="detail-scroll">
-                <div class="detail-layout">
-                  <div class="detail-main">
-                    ${edit
-                      ? this.renderDetailEditor(task, edit)
-                      : this.renderDetailContent(task)}
-                  </div>
-                  <aside class="detail-sidebar" aria-label="Task metadata">
-                    ${this.renderDetailSidebar(task)}
-                  </aside>
-                </div>
+                ${draft
+                  ? this.renderComposer(draft)
+                  : task
+                    ? html`
+                        <div class="detail-layout">
+                          <div class="detail-main">
+                            ${edit
+                              ? this.renderTaskForm(edit, {
+                                  submitLabel: 'Save',
+                                  pendingLabel: 'Saving…',
+                                  onChange: (patch) => {
+                                    if (!this.detailEdit) return;
+                                    this.detailEdit = {
+                                      ...this.detailEdit,
+                                      ...patch,
+                                    };
+                                  },
+                                  onSubmit: () => {
+                                    void this.saveDetailEdit();
+                                  },
+                                  onCancel: this.cancelDetailEdit,
+                                })
+                              : this.renderDetailContent(task)}
+                          </div>
+                          <aside
+                            class="detail-sidebar"
+                            aria-label="Task metadata"
+                          >
+                            ${this.renderDetailSidebar(task)}
+                          </aside>
+                        </div>
+                      `
+                    : nothing}
               </div>
             `
           : nothing}
@@ -2231,10 +2350,11 @@ export class KanbrawlApp extends LitElement {
           <kanbrawl-board
             .columns=${this.board.columns}
             .tasks=${this.board.tasks}
-            @create-task=${this.handleCreateTask}
+            @create-task-request=${this.handleCreateRequest}
             @update-task=${this.handleUpdateTask}
             @delete-task=${this.handleDeleteTask}
             @view-task=${this.handleViewTask}
+            @edit-task=${this.handleEditRequest}
           ></kanbrawl-board>
         </div>
       </main>

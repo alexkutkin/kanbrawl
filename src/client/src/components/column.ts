@@ -42,15 +42,8 @@ export class KanbrawlColumn extends LitElement {
   @property({ type: Object }) staleIds = new Set<string>();
   @property() sortBy: SortBy = 'created';
   @property() sortOrder: SortOrder = 'asc';
-  @state() private showAddForm = false;
-  @state() private newTitle = '';
-  @state() private newDescription = '';
-  @state() private newPriority = 'P1';
-  @state() private newAssignee = '';
   @state() private dragOver = false;
   @state() private folded = false;
-  @state() private pending = false;
-  @state() private formError: string | undefined;
   @state() private dropHint: string | undefined;
 
   private hintTimer: ReturnType<typeof setTimeout> | undefined;
@@ -285,116 +278,6 @@ export class KanbrawlColumn extends LitElement {
       outline-offset: 2px;
     }
 
-    .add-form {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-
-    .add-form label {
-      font-family: 'Space Mono', monospace;
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 1px;
-      text-transform: uppercase;
-      color: var(--text-dimmed);
-    }
-
-    .add-form input,
-    .add-form textarea,
-    .add-form select {
-      width: 100%;
-      padding: 10px 12px;
-      background: var(--bg-input);
-      border: 1px solid var(--border-input);
-      border-radius: 6px;
-      color: var(--text-primary);
-      font-family: 'DM Sans', sans-serif;
-      font-size: 13px;
-      outline: none;
-      transition:
-        border-color 0.2s ease,
-        background 0.3s ease;
-      box-sizing: border-box;
-    }
-
-    .add-form input:focus,
-    .add-form textarea:focus,
-    .add-form select:focus {
-      border-color: var(--accent);
-    }
-
-    .add-form textarea {
-      resize: vertical;
-      min-height: 60px;
-    }
-
-    .add-form select {
-      cursor: pointer;
-    }
-
-    .form-row {
-      display: flex;
-      gap: 8px;
-    }
-
-    .form-row > * {
-      flex: 1;
-      min-width: 0;
-    }
-
-    .form-error {
-      font-size: 12px;
-      color: var(--error-text);
-    }
-
-    .form-actions {
-      display: flex;
-      gap: 8px;
-    }
-
-    .form-actions button {
-      flex: 1;
-      min-height: 36px;
-      padding: 8px;
-      border-radius: 6px;
-      border: none;
-      font-family: 'DM Sans', sans-serif;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.15s ease;
-    }
-
-    .btn-confirm {
-      background: var(--accent);
-      color: var(--on-accent);
-    }
-
-    .btn-confirm:hover {
-      background: var(--accent-hover);
-    }
-
-    .btn-confirm:disabled {
-      background: var(--btn-disabled-bg);
-      color: var(--btn-disabled-text);
-      cursor: not-allowed;
-    }
-
-    .btn-cancel {
-      background: var(--btn-secondary-bg);
-      color: var(--text-secondary);
-    }
-
-    .btn-cancel:hover {
-      background: var(--btn-secondary-hover);
-    }
-
-    .btn-cancel:disabled {
-      cursor: not-allowed;
-      opacity: 0.7;
-    }
-
     @media (max-width: 600px) {
       :host(.folded) {
         width: 100%;
@@ -528,70 +411,14 @@ export class KanbrawlColumn extends LitElement {
     }, 3000);
   }
 
-  private async toggleAddForm() {
-    if (this.pending) return;
-    this.showAddForm = !this.showAddForm;
-    this.formError = undefined;
-    this.newTitle = '';
-    this.newDescription = '';
-    this.newPriority = 'P1';
-    this.newAssignee = '';
-    if (this.showAddForm) {
-      await this.updateComplete;
-      this.shadowRoot
-        ?.querySelector<HTMLInputElement>('.add-form input')
-        ?.focus();
-    }
-  }
-
-  private submitTask() {
-    if (this.pending) return;
-    const title = this.newTitle.trim();
-    if (!title) {
-      this.formError = 'Title is required.';
-      return;
-    }
-
-    this.pending = true;
-    this.formError = undefined;
+  private requestCreate() {
     this.dispatchEvent(
-      new CustomEvent('create-task', {
-        detail: {
-          title,
-          description: this.newDescription,
-          column: this.name,
-          priority: this.newPriority,
-          assignee: this.newAssignee.trim(),
-          resolve: () => {
-            this.pending = false;
-            this.showAddForm = false;
-            this.newTitle = '';
-            this.newDescription = '';
-            this.newPriority = 'P1';
-            this.newAssignee = '';
-          },
-          reject: (message: string) => {
-            this.pending = false;
-            this.formError = message;
-          },
-        },
+      new CustomEvent('create-task-request', {
+        detail: { column: this.name },
         bubbles: true,
         composed: true,
       }),
     );
-  }
-
-  private handleInputKeydown(e: KeyboardEvent) {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      this.submitTask();
-    }
-  }
-
-  private handleFormKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape' && !this.pending) {
-      void this.toggleAddForm();
-    }
   }
 
   // --- Fold ---
@@ -658,91 +485,7 @@ export class KanbrawlColumn extends LitElement {
             )}
       </div>
       <div class="add-area">
-        ${this.showAddForm
-          ? html`
-              <form
-                class="add-form"
-                @submit=${(e: Event) => {
-                  e.preventDefault();
-                  this.submitTask();
-                }}
-                @keydown=${this.handleFormKeydown}
-              >
-                <label for="new-title-${this.name}">Title</label>
-                <input
-                  id="new-title-${this.name}"
-                  type="text"
-                  maxlength="200"
-                  placeholder="Task title"
-                  .value=${this.newTitle}
-                  @input=${(e: InputEvent) =>
-                    (this.newTitle = (e.target as HTMLInputElement).value)}
-                  @keydown=${this.handleInputKeydown}
-                />
-                <label for="new-description-${this.name}">Description</label>
-                <textarea
-                  id="new-description-${this.name}"
-                  maxlength="4000"
-                  placeholder="Description (optional)"
-                  .value=${this.newDescription}
-                  @input=${(e: InputEvent) =>
-                    (this.newDescription = (
-                      e.target as HTMLTextAreaElement
-                    ).value)}
-                ></textarea>
-                <div class="form-row">
-                  <select
-                    aria-label="Priority"
-                    .value=${this.newPriority}
-                    @change=${(e: Event) =>
-                      (this.newPriority = (
-                        e.target as HTMLSelectElement
-                      ).value)}
-                  >
-                    <option value="P0">P0 – Critical</option>
-                    <option value="P1">P1 – Normal</option>
-                    <option value="P2">P2 – Low</option>
-                  </select>
-                  <input
-                    type="text"
-                    maxlength="100"
-                    aria-label="Assignee"
-                    placeholder="Assignee (optional)"
-                    .value=${this.newAssignee}
-                    @input=${(e: InputEvent) =>
-                      (this.newAssignee = (e.target as HTMLInputElement).value)}
-                    @keydown=${this.handleInputKeydown}
-                  />
-                </div>
-                ${this.formError
-                  ? html`<div class="form-error" role="alert">
-                      ${this.formError}
-                    </div>`
-                  : nothing}
-                <div class="form-actions">
-                  <button
-                    type="submit"
-                    class="btn-confirm"
-                    ?disabled=${this.pending || !this.newTitle.trim()}
-                  >
-                    ${this.pending ? 'Adding…' : 'Add task'}
-                  </button>
-                  <button
-                    type="button"
-                    class="btn-cancel"
-                    ?disabled=${this.pending}
-                    @click=${this.toggleAddForm}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </form>
-            `
-          : html`
-              <button class="add-btn" @click=${this.toggleAddForm}>
-                + Add task
-              </button>
-            `}
+        <button class="add-btn" @click=${this.requestCreate}>+ Add task</button>
       </div>
     `;
   }

@@ -138,9 +138,7 @@ export class KanbrawlBoard extends LitElement {
             element.tagName === 'SELECT' ||
             element.classList.contains('action-btn') ||
             element.classList.contains('add-btn') ||
-            element.classList.contains('fold-btn') ||
-            element.classList.contains('edit-form') ||
-            element.classList.contains('add-form')),
+            element.classList.contains('fold-btn')),
       )
     ) {
       return;

@@ -1,24 +1,12 @@
 import { LitElement, html, css, nothing } from 'lit';
-import { customElement, property, state } from 'lit/decorators.js';
+import { customElement, property } from 'lit/decorators.js';
 import type { Task } from '../types.js';
-
-type ResultCallbacks = {
-  resolve?: () => void;
-  reject?: (message: string) => void;
-};
 
 @customElement('kanbrawl-task')
 export class KanbrawlTask extends LitElement {
   @property({ type: Object }) task!: Task;
   @property({ type: Array }) allColumns: string[] = [];
   @property({ type: Boolean }) stale = false;
-  @state() private editing = false;
-  @state() private editTitle = '';
-  @state() private editDescription = '';
-  @state() private editPriority = 'P1';
-  @state() private editAssignee = '';
-  @state() private pending = false;
-  @state() private editError: string | undefined;
 
   static styles = css`
     :host {
@@ -217,109 +205,6 @@ export class KanbrawlTask extends LitElement {
       color: var(--delete-text);
     }
 
-    /* Edit form */
-    .edit-form {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-
-    .edit-form label {
-      font-family: 'Space Mono', monospace;
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 1px;
-      text-transform: uppercase;
-      color: var(--text-dimmed);
-    }
-
-    .edit-form input,
-    .edit-form textarea,
-    .edit-form select {
-      width: 100%;
-      padding: 8px 10px;
-      background: var(--bg-input);
-      border: 1px solid var(--border-input);
-      border-radius: 4px;
-      color: var(--text-primary);
-      font-family: 'DM Sans', sans-serif;
-      font-size: 13px;
-      outline: none;
-      box-sizing: border-box;
-      transition: border-color 0.2s ease;
-    }
-
-    .edit-form input:focus,
-    .edit-form textarea:focus,
-    .edit-form select:focus {
-      border-color: var(--accent);
-    }
-
-    .edit-form textarea {
-      resize: vertical;
-      min-height: 60px;
-    }
-
-    .edit-form select {
-      cursor: pointer;
-    }
-
-    .edit-row {
-      display: flex;
-      gap: 8px;
-    }
-
-    .edit-row > * {
-      flex: 1;
-      min-width: 0;
-    }
-
-    .form-error {
-      font-size: 12px;
-      color: var(--error-text);
-    }
-
-    .edit-actions {
-      display: flex;
-      gap: 6px;
-    }
-
-    .edit-actions button {
-      flex: 1;
-      min-height: 32px;
-      padding: 6px;
-      border-radius: 4px;
-      border: none;
-      font-family: 'DM Sans', sans-serif;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-    }
-
-    .btn-save {
-      background: var(--accent);
-      color: var(--on-accent);
-    }
-
-    .btn-save:hover {
-      background: var(--accent-hover);
-    }
-
-    .btn-save:disabled {
-      background: var(--btn-disabled-bg);
-      color: var(--btn-disabled-text);
-      cursor: not-allowed;
-    }
-
-    .btn-edit-cancel {
-      background: var(--btn-secondary-bg);
-      color: var(--text-secondary);
-    }
-
-    .btn-edit-cancel:hover {
-      background: var(--btn-secondary-hover);
-    }
-
     @media (pointer: coarse) {
       .task-actions {
         opacity: 1;
@@ -335,10 +220,6 @@ export class KanbrawlTask extends LitElement {
     @media (max-width: 600px) {
       .task-card {
         padding: 12px;
-      }
-
-      .edit-row {
-        flex-direction: column;
       }
     }
 
@@ -367,11 +248,6 @@ export class KanbrawlTask extends LitElement {
   }
 
   private readonly _onDragStart = (e: DragEvent) => {
-    if (this.editing) {
-      e.preventDefault();
-      return;
-    }
-
     e.dataTransfer?.setData('text/plain', this.task.id);
     if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
     requestAnimationFrame(() => {
@@ -402,52 +278,10 @@ export class KanbrawlTask extends LitElement {
     });
   }
 
-  private startEdit() {
-    this.editing = true;
-    this.draggable = false;
-    this.editError = undefined;
-    this.editTitle = this.task.title;
-    this.editDescription = this.task.description;
-    this.editPriority = this.task.priority;
-    this.editAssignee = this.task.assignee;
-  }
-
-  private cancelEdit() {
-    this.editing = false;
-    this.pending = false;
-    this.editError = undefined;
-    this.draggable = true;
-  }
-
-  private saveEdit() {
-    if (this.pending) return;
-    if (!this.editTitle.trim()) {
-      this.editError = 'Title is required.';
-      return;
-    }
-
-    this.pending = true;
-    this.editError = undefined;
-    const detail = {
-      id: this.task.id,
-      title: this.editTitle.trim(),
-      description: this.editDescription,
-      priority: this.editPriority,
-      assignee: this.editAssignee.trim(),
-      resolve: () => {
-        this.pending = false;
-        this.editing = false;
-        this.draggable = true;
-      },
-      reject: (message: string) => {
-        this.pending = false;
-        this.editError = message;
-      },
-    };
-
+  private requestEdit() {
     this.dispatchEvent(
-      new CustomEvent('update-task', {
-        detail,
+      new CustomEvent('edit-task', {
+        detail: { task: this.task },
         bubbles: true,
         composed: true,
       }),
@@ -465,7 +299,6 @@ export class KanbrawlTask extends LitElement {
   }
 
   private handleViewTask() {
-    if (this.editing) return;
     this.dispatchEvent(
       new CustomEvent('view-task', {
         detail: { task: this.task },
@@ -475,102 +308,7 @@ export class KanbrawlTask extends LitElement {
     );
   }
 
-  private handleInputKeydown(e: KeyboardEvent) {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      this.saveEdit();
-    }
-
-    if (e.key === 'Escape') {
-      this.cancelEdit();
-    }
-  }
-
-  private handleFormKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') this.cancelEdit();
-  }
-
   render() {
-    if (this.editing) {
-      return html`
-        <div class="task-card">
-          <form
-            class="edit-form"
-            @submit=${(e: Event) => {
-              e.preventDefault();
-              this.saveEdit();
-            }}
-            @keydown=${this.handleFormKeydown}
-          >
-            <label for="edit-title-${this.task.id}">Title</label>
-            <input
-              id="edit-title-${this.task.id}"
-              type="text"
-              maxlength="200"
-              .value=${this.editTitle}
-              @input=${(e: InputEvent) =>
-                (this.editTitle = (e.target as HTMLInputElement).value)}
-              @keydown=${this.handleInputKeydown}
-            />
-            <label for="edit-description-${this.task.id}">Description</label>
-            <textarea
-              id="edit-description-${this.task.id}"
-              maxlength="4000"
-              .value=${this.editDescription}
-              @input=${(e: InputEvent) =>
-                (this.editDescription = (
-                  e.target as HTMLTextAreaElement
-                ).value)}
-            ></textarea>
-            <div class="edit-row">
-              <select
-                aria-label="Priority"
-                .value=${this.editPriority}
-                @change=${(e: Event) =>
-                  (this.editPriority = (e.target as HTMLSelectElement).value)}
-              >
-                <option value="P0">P0 — Critical</option>
-                <option value="P1">P1 — Normal</option>
-                <option value="P2">P2 — Low</option>
-              </select>
-              <input
-                type="text"
-                maxlength="100"
-                aria-label="Assignee"
-                placeholder="Assignee (optional)"
-                .value=${this.editAssignee}
-                @input=${(e: InputEvent) =>
-                  (this.editAssignee = (e.target as HTMLInputElement).value)}
-                @keydown=${this.handleInputKeydown}
-              />
-            </div>
-            ${this.editError
-              ? html`<div class="form-error" role="alert">
-                  ${this.editError}
-                </div>`
-              : nothing}
-            <div class="edit-actions">
-              <button
-                type="submit"
-                class="btn-save"
-                ?disabled=${this.pending || !this.editTitle.trim()}
-              >
-                ${this.pending ? 'Saving…' : 'Save'}
-              </button>
-              <button
-                type="button"
-                class="btn-edit-cancel"
-                ?disabled=${this.pending}
-                @click=${this.cancelEdit}
-              >
-                Cancel
-              </button>
-            </div>
-          </form>
-        </div>
-      `;
-    }
-
     return html`
       <div class="task-card">
         <button
@@ -617,7 +355,7 @@ export class KanbrawlTask extends LitElement {
             class="action-btn"
             title="Edit"
             aria-label="Edit ${this.task.title}"
-            @click=${this.startEdit}
+            @click=${this.requestEdit}
           >
             ✎
           </button>
