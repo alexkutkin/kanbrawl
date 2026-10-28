@@ -13,34 +13,21 @@ import {
 } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
+import {
+  LIMITS,
+  defaultColumns,
+  type Board,
+  type BoardEvent,
+  type Column,
+  type Priority,
+  type SortBy,
+  type SortOrder,
+  type Task,
+} from '../shared/board.js';
 import { BoardError } from './errors.js';
-import type {
-  BoardEvent,
-  Column,
-  KanbrawlData,
-  Priority,
-  SortBy,
-  SortOrder,
-  Task,
-} from './types.js';
 
 const SORT_FIELDS = new Set<SortBy>(['priority', 'created', 'updated']);
 const PRIORITIES = new Set<Priority>(['P0', 'P1', 'P2']);
-
-const LIMITS = {
-  title: 200,
-  description: 4000,
-  assignee: 100,
-} as const;
-
-function createDefaultColumns(): Column[] {
-  return [
-    { id: uuidv4(), name: 'Todo', sortBy: 'priority', sortOrder: 'asc' },
-    { id: uuidv4(), name: 'In progress', sortBy: 'created', sortOrder: 'asc' },
-    { id: uuidv4(), name: 'Blocked', sortBy: 'created', sortOrder: 'asc' },
-    { id: uuidv4(), name: 'Done', sortBy: 'updated', sortOrder: 'desc' },
-  ];
-}
 
 function isPriority(value: unknown): value is Priority {
   return PRIORITIES.has(value as Priority);
@@ -143,7 +130,7 @@ function normalizeStoredColumns(raw: Array<Column | string> | undefined): {
   columns: Column[];
   changed: boolean;
 } {
-  const source = raw && raw.length > 0 ? raw : createDefaultColumns();
+  const source = raw && raw.length > 0 ? raw : defaultColumns(uuidv4);
   let changed = !raw || raw.length === 0;
   const names = new Set<string>();
   const ids = new Set<string>();
@@ -187,7 +174,7 @@ function normalizeStoredColumns(raw: Array<Column | string> | undefined): {
   }
 
   if (columns.length === 0) {
-    return { columns: createDefaultColumns(), changed: true };
+    return { columns: defaultColumns(uuidv4), changed: true };
   }
 
   return { columns, changed };
@@ -307,7 +294,7 @@ export type BoardStoreOptions = {
 };
 
 export class BoardStore {
-  private data: KanbrawlData;
+  private data: Board;
   private readonly filePath: string;
   private readonly lockPath: string;
   private stamp = '';
@@ -331,22 +318,22 @@ export class BoardStore {
   }
 
   private readFromDisk(): {
-    data: KanbrawlData;
+    data: Board;
     stamp: string;
     changed: boolean;
   } {
     if (!existsSync(this.filePath)) {
       return {
-        data: { columns: createDefaultColumns(), tasks: [] },
+        data: { columns: defaultColumns(uuidv4), tasks: [] },
         stamp: '',
         changed: true,
       };
     }
 
     const raw = readFileSync(this.filePath, 'utf8');
-    let parsed: Partial<KanbrawlData> & { columns?: Array<Column | string> };
+    let parsed: Partial<Board> & { columns?: Array<Column | string> };
     try {
-      parsed = JSON.parse(raw) as Partial<KanbrawlData> & {
+      parsed = JSON.parse(raw) as Partial<Board> & {
         columns?: Array<Column | string>;
       };
     } catch {
@@ -375,7 +362,7 @@ export class BoardStore {
     };
   }
 
-  private writeAtomic(data: KanbrawlData): void {
+  private writeAtomic(data: Board): void {
     const temporaryPath = `${this.filePath}.${process.pid}.${uuidv4()}.tmp`;
     writeFileSync(temporaryPath, JSON.stringify(data, null, 2) + '\n', 'utf8');
     renameSync(temporaryPath, this.filePath);
@@ -472,7 +459,7 @@ export class BoardStore {
   }
 
   private mutate<T>(
-    operation: (data: KanbrawlData) => { result: T; events: BoardEvent[] },
+    operation: (data: Board) => { result: T; events: BoardEvent[] },
   ): T {
     const release = this.acquireLock();
     try {
@@ -504,7 +491,7 @@ export class BoardStore {
     };
   }
 
-  getBoard(): KanbrawlData {
+  getBoard(): Board {
     this.syncFromDisk();
     return clone(this.data);
   }
@@ -532,7 +519,7 @@ export class BoardStore {
     return task ? clone(task) : undefined;
   }
 
-  private findTask(data: KanbrawlData, id: string): Task {
+  private findTask(data: Board, id: string): Task {
     const task = data.tasks.find((item) => item.id === id);
     if (!task) {
       throw new BoardError('TASK_NOT_FOUND', `Task with id "${id}" not found.`);
@@ -541,7 +528,7 @@ export class BoardStore {
     return task;
   }
 
-  private requireColumn(data: KanbrawlData, name: string): string {
+  private requireColumn(data: Board, name: string): string {
     const target = typeof name === 'string' ? name.trim() : '';
     const names = data.columns.map((column) => column.name);
     if (!names.includes(target)) {

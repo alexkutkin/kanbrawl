@@ -1,8 +1,8 @@
 import { type McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { LIMITS, type Task } from '../shared/board.js';
 import { BoardError } from './errors.js';
 import type { BoardStore } from './store.js';
-import type { Task } from './types.js';
 
 const publicTaskSchema = z.object({
   id: z.string(),
@@ -33,7 +33,7 @@ const prioritySchema = z
 
 const actorSchema = z
   .string()
-  .max(100)
+  .max(LIMITS.assignee)
   .optional()
   .describe(
     'Name recorded as the last actor for this change. Defaults to the assignee or "agent".',
@@ -257,11 +257,14 @@ export function registerTools(server: McpServer, store: BoardStore): void {
         title: z
           .string()
           .min(1, 'Title is required')
-          .max(200, 'Title must not exceed 200 characters')
+          .max(LIMITS.title, `Title must not exceed ${LIMITS.title} characters`)
           .describe('Task title'),
         description: z
           .string()
-          .max(4000, 'Description must not exceed 4000 characters')
+          .max(
+            LIMITS.description,
+            `Description must not exceed ${LIMITS.description} characters`,
+          )
           .optional()
           .describe('Task description'),
         column: z
@@ -273,7 +276,7 @@ export function registerTools(server: McpServer, store: BoardStore): void {
         priority: prioritySchema.optional(),
         assignee: z
           .string()
-          .max(100)
+          .max(LIMITS.assignee)
           .optional()
           .describe('Name of the person or agent assigned to this task'),
         actor: actorSchema,
@@ -359,16 +362,21 @@ export function registerTools(server: McpServer, store: BoardStore): void {
         "Update a task's title, description, priority, assignee and/or column in one atomic operation. Use expectedUpdatedAt to fail with CONFLICT instead of overwriting somebody else's change.",
       inputSchema: {
         id: z.string().describe('Task ID (UUID)'),
-        title: z.string().min(1).max(200).optional().describe('New task title'),
+        title: z
+          .string()
+          .min(1)
+          .max(LIMITS.title)
+          .optional()
+          .describe('New task title'),
         description: z
           .string()
-          .max(4000)
+          .max(LIMITS.description)
           .optional()
           .describe('New task description'),
         priority: prioritySchema.optional(),
         assignee: z
           .string()
-          .max(100)
+          .max(LIMITS.assignee)
           .optional()
           .describe('New assignee name (empty string to unassign)'),
         column: z

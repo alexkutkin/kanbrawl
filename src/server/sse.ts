@@ -1,5 +1,5 @@
 import type { Response } from 'express';
-import type { BoardEvent } from './types.js';
+import type { BoardEvent } from '../shared/board.js';
 
 export class SSEManager {
   private readonly clients = new Set<Response>();

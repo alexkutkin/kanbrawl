@@ -9,9 +9,9 @@ import {
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import type { BoardEvent, Column } from '../shared/board.js';
 import { BoardStore } from './store.js';
 import { BoardError } from './errors.js';
-import type { BoardEvent, Column } from './types.js';
 
 const DEFAULT_COLUMN_NAMES = ['Todo', 'In progress', 'Blocked', 'Done'];
 

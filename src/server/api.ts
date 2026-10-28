@@ -1,7 +1,7 @@
 import { Router, type Response } from 'express';
+import type { Column } from '../shared/board.js';
 import { BoardError } from './errors.js';
 import type { BoardStore } from './store.js';
-import type { Column } from './types.js';
 
 const STATUS_BY_CODE: Record<string, number> = {
   TASK_NOT_FOUND: 404,
