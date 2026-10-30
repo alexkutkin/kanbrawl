@@ -41,6 +41,10 @@ export function run(arguments_: string[]): void {
     .option('-c, --column <name>', 'target column')
     .option('-p, --priority <level>', 'priority level (0, 1, or 2)', '1')
     .option('-a, --assignee <name>', 'task assignee')
+    .option(
+      '--project <id>',
+      'project id the task belongs to (required when creating; call get_projects for ids)',
+    )
     .option('-u, --update', 'update existing task by title match')
     .action(taskAction);
 

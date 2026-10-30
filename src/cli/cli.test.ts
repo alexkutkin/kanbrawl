@@ -18,6 +18,11 @@ describe('task command', () => {
     return store;
   }
 
+  function seedProject(): string {
+    return openStore().updateProjects([{ name: 'Test project', folder: '' }])
+      .projects[0].id;
+  }
+
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'kanbrawl-cli-test-'));
     originalCwd = process.cwd();
@@ -35,20 +40,24 @@ describe('task command', () => {
   });
 
   it('creates a task with defaults', () => {
-    taskAction('My task', { priority: '1' });
+    const project = seedProject();
+    taskAction('My task', { priority: '1', project });
     const tasks = openStore().getTasks();
     expect(tasks).toHaveLength(1);
     expect(tasks[0].title).toBe('My task');
     expect(tasks[0].priority).toBe('P1');
     expect(tasks[0].column).toBe('Todo');
+    expect(tasks[0].projectId).toBe(project);
   });
 
   it('creates a task with all options', () => {
+    const project = seedProject();
     taskAction('Full task', {
       description: 'A description',
       column: 'In progress',
       priority: '0',
       assignee: 'alice',
+      project,
     });
     const tasks = openStore().getTasks();
     expect(tasks).toHaveLength(1);
@@ -57,10 +66,21 @@ describe('task command', () => {
     expect(tasks[0].column).toBe('In progress');
     expect(tasks[0].priority).toBe('P0');
     expect(tasks[0].assignee).toBe('alice');
+    expect(tasks[0].projectId).toBe(project);
+  });
+
+  it('fails to create a task without a project', () => {
+    seedProject();
+    const originalExitCode = process.exitCode;
+    taskAction('Orphan', { priority: '1' });
+    expect(process.exitCode).toBe(1);
+    process.exitCode = originalExitCode;
+    expect(openStore().getTasks()).toEqual([]);
   });
 
   it('updates an existing task with --update', () => {
-    taskAction('Update me', { priority: '1' });
+    const project = seedProject();
+    taskAction('Update me', { priority: '1', project });
     taskAction('Update me', {
       update: true,
       description: 'Updated desc',
@@ -72,10 +92,13 @@ describe('task command', () => {
     expect(tasks[0].description).toBe('Updated desc');
     expect(tasks[0].priority).toBe('P2');
     expect(tasks[0].assignee).toBe('bob');
+    // An update that omits the project keeps the current one.
+    expect(tasks[0].projectId).toBe(project);
   });
 
   it('updates task column with --update --column', () => {
-    taskAction('Move me', { priority: '1' });
+    const project = seedProject();
+    taskAction('Move me', { priority: '1', project });
     taskAction('Move me', {
       update: true,
       column: 'Done',

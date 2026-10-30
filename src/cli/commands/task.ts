@@ -7,6 +7,7 @@ type TaskOptions = {
   column?: string;
   priority?: string;
   assignee?: string;
+  project?: string;
   update?: boolean;
 };
 
@@ -46,6 +47,7 @@ export function taskAction(title: string, options: TaskOptions): void {
         priority,
         assignee: options.assignee,
         column: options.column,
+        projectId: options.project,
         actor: 'cli',
       });
 
@@ -57,6 +59,7 @@ export function taskAction(title: string, options: TaskOptions): void {
         column: options.column,
         priority,
         assignee: options.assignee,
+        projectId: options.project,
         actor: 'cli',
       });
       console.log(`✅ Task created: ${task.title} (${task.id})`);

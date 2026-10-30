@@ -44,12 +44,56 @@ describe('REST API', () => {
 
   beforeEach(() => {
     ({ app, store, dir } = createTestApp());
+    testProjectId = undefined;
   });
 
   afterEach(() => {
     store.dispose();
     rmSync(dir, { recursive: true, force: true });
   });
+
+  // Most tests just need a valid task; the project contract is covered by the
+  // POST and PATCH project tests below. An explicit projectId is honored.
+  let testProjectId: string | undefined;
+
+  async function ensureTestProject(): Promise<string> {
+    if (!testProjectId) {
+      const res = await request(app)
+        .put('/api/projects')
+        .send({
+          projects: [
+            ...store.getProjects(),
+            { name: 'Test project', folder: '' },
+          ],
+        });
+      testProjectId = (res.body.projects as Array<{ id: string }>).at(-1)!.id;
+    }
+
+    return testProjectId;
+  }
+
+  async function postTask(body: Record<string, unknown>) {
+    return request(app)
+      .post('/api/tasks')
+      .send({
+        ...(body.projectId === undefined
+          ? { projectId: await ensureTestProject() }
+          : {}),
+        ...body,
+      });
+  }
+
+  // Emulates a task from before the project catalog (transitional state).
+  function unclassify(taskId: string): void {
+    const database = new DatabaseSync(join(dir, 'kanbrawl.db'));
+    try {
+      database
+        .prepare('UPDATE tasks SET project_id = NULL WHERE id = ?')
+        .run(taskId);
+    } finally {
+      database.close();
+    }
+  }
 
   // --- GET /api/board ---
   describe('GET /api/board', () => {
@@ -71,9 +115,7 @@ describe('REST API', () => {
   // --- POST /api/tasks ---
   describe('POST /api/tasks', () => {
     it('creates a task with minimal fields', async () => {
-      const res = await request(app)
-        .post('/api/tasks')
-        .send({ title: 'Test task' });
+      const res = await postTask({ title: 'Test task' });
 
       expect(res.status).toBe(201);
       expect(res.body.title).toBe('Test task');
@@ -84,7 +126,7 @@ describe('REST API', () => {
     });
 
     it('creates a task with all fields and an explicit actor', async () => {
-      const res = await request(app).post('/api/tasks').send({
+      const res = await postTask({
         title: 'Full task',
         description: 'A detailed description',
         column: 'In progress',
@@ -104,34 +146,28 @@ describe('REST API', () => {
       const res = await request(app)
         .post('/api/tasks')
         .set('x-kanbrawl-actor', 'web-ui')
-        .send({ title: 'Header actor' });
+        .send({ title: 'Header actor', projectId: await ensureTestProject() });
 
       expect(res.status).toBe(201);
       expect(res.body.lastActor).toBe('web-ui');
     });
 
     it('rejects invalid titles with a code', async () => {
-      const missing = await request(app).post('/api/tasks').send({});
+      const missing = await postTask({});
       expect(missing.status).toBe(400);
       expect(missing.body.code).toBe('INVALID_TITLE');
 
-      const blank = await request(app)
-        .post('/api/tasks')
-        .send({ title: '   ' });
+      const blank = await postTask({ title: '   ' });
       expect(blank.status).toBe(400);
       expect(blank.body.code).toBe('INVALID_TITLE');
 
-      const long = await request(app)
-        .post('/api/tasks')
-        .send({ title: 'x'.repeat(201) });
+      const long = await postTask({ title: 'x'.repeat(201) });
       expect(long.status).toBe(400);
       expect(long.body.code).toBe('INVALID_TITLE');
     });
 
     it('rejects an invalid priority instead of storing it', async () => {
-      const res = await request(app)
-        .post('/api/tasks')
-        .send({ title: 'Task', priority: 'P9' });
+      const res = await postTask({ title: 'Task', priority: 'P9' });
 
       expect(res.status).toBe(400);
       expect(res.body.code).toBe('INVALID_PRIORITY');
@@ -139,9 +175,7 @@ describe('REST API', () => {
     });
 
     it('returns 404 for an unknown column', async () => {
-      const res = await request(app)
-        .post('/api/tasks')
-        .send({ title: 'Task', column: 'Nonexistent' });
+      const res = await postTask({ title: 'Task', column: 'Nonexistent' });
 
       expect(res.status).toBe(404);
       expect(res.body.code).toBe('COLUMN_NOT_FOUND');
@@ -149,25 +183,48 @@ describe('REST API', () => {
     });
 
     it('returns the existing task for a repeated clientRequestId', async () => {
-      const first = await request(app)
-        .post('/api/tasks')
-        .send({ title: 'Once', clientRequestId: 'key-1' });
-      const second = await request(app)
-        .post('/api/tasks')
-        .send({ title: 'Once again', clientRequestId: 'key-1' });
+      const first = await postTask({ title: 'Once', clientRequestId: 'key-1' });
+      const second = await postTask({
+        title: 'Once again',
+        clientRequestId: 'key-1',
+      });
 
       expect(second.status).toBe(201);
       expect(second.body.id).toBe(first.body.id);
       expect(store.getTasks()).toHaveLength(1);
+    });
+
+    it('requires a project and returns it on the created task', async () => {
+      const projectsResponse = await request(app)
+        .put('/api/projects')
+        .send({ projects: [{ name: 'Kanbrawl', folder: '' }] });
+      const project = projectsResponse.body.projects[0];
+
+      const missing = await request(app)
+        .post('/api/tasks')
+        .send({ title: 'Orphan' });
+      expect(missing.status).toBe(400);
+      expect(missing.body.code).toBe('INVALID_PROJECT');
+
+      const unknown = await request(app).post('/api/tasks').send({
+        title: 'Orphan',
+        projectId: '00000000-0000-0000-0000-000000000000',
+      });
+      expect(unknown.status).toBe(404);
+      expect(unknown.body.code).toBe('PROJECT_NOT_FOUND');
+
+      const created = await request(app)
+        .post('/api/tasks')
+        .send({ title: 'Owned', projectId: project.id });
+      expect(created.status).toBe(201);
+      expect(created.body.projectId).toBe(project.id);
     });
   });
 
   // --- PATCH /api/tasks/:id ---
   describe('PATCH /api/tasks/:id', () => {
     it('updates and moves in one request', async () => {
-      const created = await request(app)
-        .post('/api/tasks')
-        .send({ title: 'Task' });
+      const created = await postTask({ title: 'Task' });
 
       const res = await request(app)
         .patch(`/api/tasks/${created.body.id}`)
@@ -180,9 +237,7 @@ describe('REST API', () => {
     });
 
     it('returns 409 for a stale expectedUpdatedAt', async () => {
-      const created = await request(app)
-        .post('/api/tasks')
-        .send({ title: 'Task' });
+      const created = await postTask({ title: 'Task' });
 
       await new Promise((resolve) => {
         setTimeout(resolve, 2);
@@ -214,9 +269,7 @@ describe('REST API', () => {
     });
 
     it('returns 404 for an invalid column on move', async () => {
-      const created = await request(app)
-        .post('/api/tasks')
-        .send({ title: 'Task' });
+      const created = await postTask({ title: 'Task' });
 
       const res = await request(app)
         .patch(`/api/tasks/${created.body.id}`)
@@ -225,14 +278,67 @@ describe('REST API', () => {
       expect(res.status).toBe(404);
       expect(res.body.code).toBe('COLUMN_NOT_FOUND');
     });
+
+    it('keeps the project when omitted and rejects null or unknown ids', async () => {
+      const created = await postTask({ title: 'Owned' });
+      const url = `/api/tasks/${created.body.id}`;
+
+      const renamed = await request(app).patch(url).send({ title: 'Renamed' });
+      expect(renamed.status).toBe(200);
+      expect(renamed.body.projectId).toBe(created.body.projectId);
+
+      const nulled = await request(app).patch(url).send({ projectId: null });
+      expect(nulled.status).toBe(400);
+      expect(nulled.body.code).toBe('INVALID_PROJECT');
+
+      const unknown = await request(app)
+        .patch(url)
+        .send({ projectId: '00000000-0000-0000-0000-000000000000' });
+      expect(unknown.status).toBe(404);
+      expect(unknown.body.code).toBe('PROJECT_NOT_FOUND');
+    });
+
+    it('requires a project when editing a task without one', async () => {
+      const projectId = await ensureTestProject();
+      const created = await postTask({ title: 'Legacy' });
+      unclassify(created.body.id);
+      const url = `/api/tasks/${created.body.id}`;
+
+      const edit = await request(app).patch(url).send({ title: 'Renamed' });
+      expect(edit.status).toBe(400);
+      expect(edit.body.code).toBe('INVALID_PROJECT');
+
+      const classified = await request(app)
+        .patch(url)
+        .send({ title: 'Renamed', projectId });
+      expect(classified.status).toBe(200);
+      expect(classified.body.projectId).toBe(projectId);
+    });
+
+    it('moves between columns without touching the project', async () => {
+      const created = await postTask({ title: 'Movable' });
+      const url = `/api/tasks/${created.body.id}`;
+
+      const moved = await request(app).patch(url).send({ column: 'Done' });
+      expect(moved.status).toBe(200);
+      expect(moved.body.column).toBe('Done');
+      expect(moved.body.projectId).toBe(created.body.projectId);
+
+      // A move is project-neutral: also a task without a project can move.
+      unclassify(created.body.id);
+      const movedLegacy = await request(app)
+        .patch(url)
+        .send({ column: 'Blocked' });
+      expect(movedLegacy.status).toBe(200);
+      expect(movedLegacy.body.column).toBe('Blocked');
+      expect(movedLegacy.body.projectId).toBeUndefined();
+    });
   });
 
   // --- DELETE /api/tasks/:id ---
   describe('DELETE /api/tasks/:id', () => {
     it('deletes a task', async () => {
-      const created = await request(app)
-        .post('/api/tasks')
-        .send({ title: 'To delete' });
+      const created = await postTask({ title: 'To delete' });
 
       const res = await request(app).delete(`/api/tasks/${created.body.id}`);
       expect(res.status).toBe(204);
@@ -254,9 +360,7 @@ describe('REST API', () => {
   // --- PUT /api/columns ---
   describe('PUT /api/columns', () => {
     it('renames a column without moving its tasks', async () => {
-      const task = await request(app)
-        .post('/api/tasks')
-        .send({ title: 'Stays', column: 'Blocked' });
+      const task = await postTask({ title: 'Stays', column: 'Blocked' });
       const board = await request(app).get('/api/board');
       const columns = board.body.columns.map(
         (column: {
@@ -285,9 +389,7 @@ describe('REST API', () => {
     });
 
     it('moves tasks from a removed column to moveTo', async () => {
-      const task = await request(app)
-        .post('/api/tasks')
-        .send({ title: 'Blocked task', column: 'Blocked' });
+      const task = await postTask({ title: 'Blocked task', column: 'Blocked' });
       const board = await request(app).get('/api/board');
       const columns = board.body.columns.filter(
         (column: { name: string }) => column.name !== 'Blocked',
@@ -479,17 +581,10 @@ describe('REST API', () => {
         .send({ projects: [{ name: 'Holds tasks', folder: '' }] });
       const project = created.body.projects[0];
 
-      const task = await request(app)
-        .post('/api/tasks')
-        .send({ title: 'Referencing task' });
-      const database = new DatabaseSync(join(dir, 'kanbrawl.db'));
-      try {
-        database
-          .prepare('UPDATE tasks SET project_id = ? WHERE id = ?')
-          .run(project.id, task.body.id);
-      } finally {
-        database.close();
-      }
+      await postTask({
+        title: 'Referencing task',
+        projectId: project.id,
+      });
 
       const res = await request(app)
         .put('/api/projects')
@@ -507,7 +602,7 @@ describe('REST API', () => {
   // --- task attachments ---
   describe('task attachments', () => {
     async function createTask(title: string): Promise<string> {
-      const res = await request(app).post('/api/tasks').send({ title });
+      const res = await postTask({ title });
       return res.body.id as string;
     }
 
