@@ -33,6 +33,7 @@ export class KanbrawlColumnSettings extends LitElement {
   @state() private error: string | undefined;
   @state() private moveTo = '';
   private openedProjectsRevision = 0;
+  private columnsDirty = false;
   private projectsDirty = false;
 
   static styles = css`
@@ -336,6 +337,7 @@ export class KanbrawlColumnSettings extends LitElement {
     this.editColumns = structuredClone(this.columns);
     this.editProjects = structuredClone(this.projects);
     this.openedProjectsRevision = this.projectsRevision;
+    this.columnsDirty = false;
     this.projectsDirty = false;
     this.pending = false;
     this.error = undefined;
@@ -383,24 +385,28 @@ export class KanbrawlColumnSettings extends LitElement {
   }
 
   private updateColumnName(index: number, value: string) {
+    this.columnsDirty = true;
     this.editColumns = this.editColumns.map((column, index_) =>
       index_ === index ? { ...column, name: value } : column,
     );
   }
 
   private updateSortBy(index: number, value: SortBy) {
+    this.columnsDirty = true;
     this.editColumns = this.editColumns.map((column, index_) =>
       index_ === index ? { ...column, sortBy: value } : column,
     );
   }
 
   private updateSortOrder(index: number, value: SortOrder) {
+    this.columnsDirty = true;
     this.editColumns = this.editColumns.map((column, index_) =>
       index_ === index ? { ...column, sortOrder: value } : column,
     );
   }
 
   private async addColumn() {
+    this.columnsDirty = true;
     this.editColumns = [
       ...this.editColumns,
       {
@@ -418,6 +424,7 @@ export class KanbrawlColumnSettings extends LitElement {
   }
 
   private removeColumn(index: number) {
+    this.columnsDirty = true;
     this.editColumns = this.editColumns.filter((_, index_) => index_ !== index);
     this.syncMoveTo();
   }
@@ -425,6 +432,7 @@ export class KanbrawlColumnSettings extends LitElement {
   private moveColumn(index: number, direction: -1 | 1) {
     const target = index + direction;
     if (target < 0 || target >= this.editColumns.length) return;
+    this.columnsDirty = true;
     const columns = [...this.editColumns];
     [columns[index], columns[target]] = [columns[target], columns[index]];
     this.editColumns = columns;
@@ -519,20 +527,32 @@ export class KanbrawlColumnSettings extends LitElement {
       .filter((column) => column.name.trim().length > 0)
       .map((column) => ({ ...column, name: column.name.trim() }));
     const moveTo = this.removedColumns.length > 0 ? this.moveTo : undefined;
+    // Draft ids of projects added in this dialog are local only: the server
+    // mints the real id and rejects unknown ones, so they are not sent.
+    const knownProjectIds = new Set(this.projects.map((project) => project.id));
     const projects = this.editProjects
       .filter((project) => project.name.trim().length > 0)
-      .map((project) => ({ ...project, name: project.name.trim() }));
+      .map((project) => {
+        const entry = { ...project, name: project.name.trim() };
+        return knownProjectIds.has(entry.id)
+          ? entry
+          : { name: entry.name, folder: entry.folder };
+      });
 
     this.pending = true;
     this.error = undefined;
-    const columnsError = await this.dispatchChange('update-columns', {
-      columns,
-      moveTo,
-    });
-    if (columnsError !== undefined) {
-      this.pending = false;
-      this.error = columnsError;
-      return;
+    // An untouched column list is not written back at all, so saving projects
+    // cannot overwrite somebody else's concurrent column changes.
+    if (this.columnsDirty) {
+      const columnsError = await this.dispatchChange('update-columns', {
+        columns,
+        moveTo,
+      });
+      if (columnsError !== undefined) {
+        this.pending = false;
+        this.error = columnsError;
+        return;
+      }
     }
 
     // The UI always sends the revision the draft was based on, so a

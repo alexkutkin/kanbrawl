@@ -6,6 +6,7 @@ import {
   hiddenTaskCount,
   isTaskVisible,
   normalizeFilter,
+  pruneFilter,
   removeProjectFromFilter,
   toggleAllProjects,
   toggleProjectFilter,
@@ -123,5 +124,24 @@ describe('task filter state machine', () => {
         PROJECT_IDS,
       ),
     ).toEqual({ mode: 'all' });
+  });
+
+  it('pruneFilter drops deleted projects and normalizes to all', () => {
+    // Deleting p2 from the catalog: the remaining selection covers it all and
+    // must become `all`, so a project added later is visible automatically.
+    expect(pruneFilter({ mode: 'selected', ids: ['p1'] }, ['p1'])).toEqual({
+      mode: 'all',
+    });
+    // An unknown id left over from a deleted project is dropped.
+    expect(
+      pruneFilter({ mode: 'selected', ids: ['p1', 'gone'] }, ['p1', 'p3']),
+    ).toEqual({ mode: 'selected', ids: ['p1'] });
+  });
+
+  it('pruneFilter keeps the selection when the catalog grows', () => {
+    expect(
+      pruneFilter({ mode: 'selected', ids: ['p1'] }, ['p1', 'p3', 'p4']),
+    ).toEqual({ mode: 'selected', ids: ['p1'] });
+    expect(pruneFilter({ mode: 'all' }, ['p1'])).toEqual({ mode: 'all' });
   });
 });

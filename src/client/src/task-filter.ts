@@ -79,6 +79,25 @@ export function removeProjectFromFilter(
 }
 
 /**
+ * Drops ids of projects that no longer exist and normalizes the selection.
+ * The catalog can change remotely at any time (another client, an agent), so
+ * the selection is re-synced on every catalog change: for example a selection
+ * covering the whole remaining catalog becomes `all`, and a project added
+ * later is visible without touching the chips.
+ */
+export function pruneFilter(
+  filter: TaskFilter,
+  projectIds: string[],
+): TaskFilter {
+  if (filter.mode === 'all') return filter;
+  const known = new Set(projectIds);
+  return normalizeFilter(
+    { mode: 'selected', ids: filter.ids.filter((id) => known.has(id)) },
+    projectIds,
+  );
+}
+
+/**
  * A task is hidden only when it has a project that the filter excludes;
  * unclassified tasks stay visible regardless of the filter.
  */
