@@ -468,6 +468,96 @@ describe('MCP Tools', () => {
     });
   });
 
+  // --- get_projects ---
+  describe('get_projects', () => {
+    it('returns an empty catalog with revision 0', async () => {
+      const result = await callTool(client, 'get_projects');
+      expect(result.isError).toBeUndefined();
+      expect(result.json()).toEqual({ projects: [], revision: 0 });
+      expect(result.structured).toEqual(result.json());
+    });
+
+    it('reflects the managed project list', async () => {
+      await callTool(client, 'update_projects', {
+        projects: [{ name: 'Kanbrawl', folder: '/code/kanbrawl' }],
+      });
+
+      const result = await callTool(client, 'get_projects');
+      expect(result.json().projects).toHaveLength(1);
+      expect(result.json().projects[0]).toMatchObject({
+        name: 'Kanbrawl',
+        folder: '/code/kanbrawl',
+      });
+      expect(result.json().revision).toBe(1);
+    });
+  });
+
+  // --- update_projects ---
+  describe('update_projects', () => {
+    it('creates, renames, reorders and deletes in full-list replacements', async () => {
+      const created = await callTool(client, 'update_projects', {
+        projects: [
+          { name: 'Kanbrawl', folder: '/code/kanbrawl' },
+          { name: 'Ops', folder: '/code/ops' },
+        ],
+      });
+      expect(created.isError).toBeUndefined();
+      expect(created.json().revision).toBe(1);
+      const [first, second] = created.json().projects as Array<{
+        id: string;
+      }>;
+
+      const updated = await callTool(client, 'update_projects', {
+        projects: [{ id: second.id, name: 'Runbook', folder: '/code/runbook' }],
+      });
+      expect(updated.isError).toBeUndefined();
+      expect(updated.json().revision).toBe(2);
+      expect(updated.json().projects).toEqual([
+        { id: second.id, name: 'Runbook', folder: '/code/runbook' },
+      ]);
+      expect(store.getProjects()).toEqual(updated.json().projects);
+    });
+
+    it('accepts an empty list', async () => {
+      await callTool(client, 'update_projects', {
+        projects: [{ name: 'Only', folder: '' }],
+      });
+      const result = await callTool(client, 'update_projects', {
+        projects: [],
+      });
+      expect(result.isError).toBeUndefined();
+      expect(result.json().projects).toEqual([]);
+      expect(result.json().revision).toBe(2);
+    });
+
+    it('rejects a stale expectedRevision with CONFLICT', async () => {
+      await callTool(client, 'update_projects', {
+        projects: [{ name: 'Kanbrawl', folder: '' }],
+      });
+
+      const result = await callTool(client, 'update_projects', {
+        projects: [{ name: 'Overwritten', folder: '' }],
+        expectedRevision: 0,
+      });
+      expect(result.isError).toBe(true);
+      expect(result.text).toMatch(/^Error \[CONFLICT]:/);
+      expect(store.getProjects().map((project) => project.name)).toEqual([
+        'Kanbrawl',
+      ]);
+    });
+
+    it('rejects duplicate names with DUPLICATE_PROJECT', async () => {
+      const result = await callTool(client, 'update_projects', {
+        projects: [
+          { name: 'Kanbrawl', folder: '/a' },
+          { name: 'Kanbrawl', folder: '/b' },
+        ],
+      });
+      expect(result.isError).toBe(true);
+      expect(result.text).toMatch(/^Error \[DUPLICATE_PROJECT]:/);
+    });
+  });
+
   // --- image attachments ---
   describe('image attachments', () => {
     it('attaches an image from a file path', async () => {
@@ -632,9 +722,11 @@ describe('MCP Tools', () => {
         'delete_task',
         'get_attachment',
         'get_columns',
+        'get_projects',
         'get_task',
         'list_tasks',
         'move_task',
+        'update_projects',
         'update_task',
       ]);
     });
@@ -652,6 +744,13 @@ describe('MCP Tools', () => {
 
       expect(byName.get('get_attachment')?.annotations?.readOnlyHint).toBe(
         true,
+      );
+      expect(byName.get('get_projects')?.annotations?.readOnlyHint).toBe(true);
+      expect(byName.get('update_projects')?.annotations?.destructiveHint).toBe(
+        true,
+      );
+      expect(byName.get('update_projects')?.annotations?.idempotentHint).toBe(
+        false,
       );
       expect(
         byName.get('delete_attachment')?.annotations?.destructiveHint,

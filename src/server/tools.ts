@@ -17,6 +17,16 @@ const attachmentSchema = z.object({
   createdAt: z.string(),
 });
 
+const projectSchema = z.object({
+  id: z.string().describe('Stable project ID (UUID), survives renames'),
+  name: z.string().describe('Unique project name'),
+  folder: z
+    .string()
+    .describe(
+      'Path of the project code folder; stored as metadata and never validated against the filesystem',
+    ),
+});
+
 const publicTaskSchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -135,6 +145,86 @@ export function registerTools(server: McpServer, store: BoardStore): void {
         sortOrder: col.sortOrder,
       }));
       return ok({ columns: columnsWithCounts });
+    },
+  );
+
+  server.registerTool(
+    'get_projects',
+    {
+      title: 'Get Projects',
+      description:
+        'Get the board project catalog: stable IDs, names, folder paths and the catalog revision. The list order is the display order.',
+      inputSchema: {},
+      outputSchema: {
+        projects: z.array(projectSchema),
+        revision: z
+          .number()
+          .describe('Catalog revision; increments on every accepted change'),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async () =>
+      ok({
+        projects: store.getProjects(),
+        revision: store.getProjectsRevision(),
+      }),
+  );
+
+  server.registerTool(
+    'update_projects',
+    {
+      title: 'Update Projects',
+      description:
+        'Replace the full project list in one atomic change: entries matching an existing project by id (or name) are kept, renamed and reordered, new entries are created, and projects missing from the list are deleted (refused with PROJECT_NOT_EMPTY while they still hold tasks). Pass expectedRevision to fail with CONFLICT instead of overwriting concurrent changes; without it the write is last-write-wins. The revision increments on every accepted change regardless of writer.',
+      inputSchema: {
+        projects: z
+          .array(
+            z.object({
+              id: z
+                .string()
+                .optional()
+                .describe(
+                  'ID of an existing project to keep; omit to create a new project',
+                ),
+              name: z.string().describe('Unique project name'),
+              folder: z
+                .string()
+                .describe(
+                  'Path of the project code folder; stored as metadata and never validated against the filesystem',
+                ),
+            }),
+          )
+          .describe('The complete new project list in display order'),
+        expectedRevision: z
+          .number()
+          .int()
+          .optional()
+          .describe(
+            'Optimistic concurrency guard: the catalog revision you last saw. The call fails with CONFLICT if the list changed since. Omit for last-write-wins.',
+          ),
+      },
+      outputSchema: {
+        projects: z.array(projectSchema),
+        revision: z.number().describe('New catalog revision'),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ projects, expectedRevision }) => {
+      try {
+        return ok(store.updateProjects(projects, expectedRevision));
+      } catch (error) {
+        return toolError(error);
+      }
     },
   );
 
