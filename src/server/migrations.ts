@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 
 /**
@@ -9,6 +10,10 @@ import type { DatabaseSync } from 'node:sqlite';
  * upgraded from an older version end in the same schema state. An
  * interrupted migration rolls back together with its version bump and is
  * safe to re-run.
+ *
+ * Before a migration touches an existing database file, a consistent copy of
+ * it is written once next to the original (`<db>-backup-v<from>`), so a
+ * wrongly applied migration can be rolled back by hand.
  */
 export const SCHEMA_VERSION = 1;
 
@@ -95,9 +100,29 @@ function migrateTo1(database: DatabaseSync): void {
   );
 }
 
-export function migrate(database: DatabaseSync): void {
+/**
+ * Writes a consistent copy of the database next to the original before its
+ * schema is changed. `VACUUM INTO` snapshots through the open connection, so
+ * the copy is transactionally consistent even mid-session. The backup is
+ * written once per source version and never overwritten.
+ */
+function backupBeforeMigration(
+  database: DatabaseSync,
+  databasePath: string,
+  fromVersion: number,
+): void {
+  const backupPath = `${databasePath}-backup-v${fromVersion}`;
+  if (existsSync(backupPath)) return;
+  database.exec(`VACUUM INTO '${backupPath.replaceAll("'", "''")}'`);
+}
+
+export function migrate(database: DatabaseSync, databasePath?: string): void {
   const version = readUserVersion(database);
   if (version >= SCHEMA_VERSION) return;
+
+  if (databasePath !== undefined) {
+    backupBeforeMigration(database, databasePath, version);
+  }
 
   database.exec('BEGIN IMMEDIATE');
   try {

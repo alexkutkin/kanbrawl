@@ -9,6 +9,13 @@ migrating when that count reaches zero.
 The server never calls an LLM. Classification is done by an agent working over
 the normal MCP tools, so every step is reviewable and reversible.
 
+## Before you start
+
+The server writes a one-time backup of an existing database next to it
+(`<db>-backup-v<N>`) before applying a schema migration. Confirm the backup
+file exists before classifying anything; it is the rollback point if a
+migration ever needs to be undone by hand.
+
 ## Rules that hold during the transition
 
 - Creating a task still requires a project (`INVALID_PROJECT` otherwise).
