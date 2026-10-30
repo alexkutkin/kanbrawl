@@ -101,6 +101,7 @@
     "@types/supertest": "^6.0.3",
     "concurrently": "^9.1.2",
     "eslint-config-xo-typescript": "^9.0.0",
+    "happy-dom": "^21.0.4",
     "semantic-release": "^25.0.3",
     "semantic-release-npm-github": "^6.0.0",
     "supertest": "^7.2.2",

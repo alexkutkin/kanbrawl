@@ -35,7 +35,18 @@ import {
   type TaskDialogState,
   type TaskFields,
 } from './task-dialog.js';
+import {
+  createFilter,
+  hiddenTaskCount,
+  isTaskVisible,
+  toggleAllProjects,
+  toggleProjectFilter,
+  removeProjectFromFilter,
+  unclassifiedTaskCount,
+  type TaskFilter,
+} from './task-filter.js';
 import './components/column-settings.js';
+import './components/filter-bar.js';
 import './components/app-button.js';
 import './components/app-badge.js';
 import './components/app-banner.js';
@@ -277,7 +288,11 @@ export class KanbrawlApp extends LitElement {
   @state() private clock = Date.now();
   @state() private error: ErrorState | undefined;
   @state() private theme: Theme = 'dark';
-  @state() private notice: string | undefined;
+  @state() private notice:
+    | { text: string; actionLabel?: string; action?: () => void }
+    | undefined;
+
+  @state() private taskFilter: TaskFilter = createFilter();
   @state() private dialog: TaskDialogState = { mode: 'closed' };
   @state() private copiedId: string | undefined;
   @state() private pendingDelete: { id: string; title: string } | undefined;
@@ -1362,7 +1377,15 @@ export class KanbrawlApp extends LitElement {
   }
 
   private notify(text: string) {
-    this.notice = text;
+    this.notifyWithAction(text);
+  }
+
+  private notifyWithAction(
+    text: string,
+    actionLabel?: string,
+    action?: () => void,
+  ) {
+    this.notice = { text, actionLabel, action };
     if (this.noticeTimer) clearTimeout(this.noticeTimer);
     this.noticeTimer = setTimeout(() => {
       this.notice = undefined;
@@ -1616,9 +1639,14 @@ export class KanbrawlApp extends LitElement {
   private async handleUpdateTask(e: CustomEvent<UpdateTaskDetail>) {
     const { id, resolve, reject, ...fields } = e.detail;
     try {
-      await this.boardSession.updateTask(id, { ...fields, actor: 'web' });
+      const before = this.board.tasks.find((task) => task.id === id);
+      const updated = await this.boardSession.updateTask(id, {
+        ...fields,
+        actor: 'web',
+      });
       resolve?.();
       this.clearError();
+      this.announceFilteredOut(before, updated);
     } catch (error) {
       if (reject) {
         reject(this.message(error));
@@ -1703,7 +1731,7 @@ export class KanbrawlApp extends LitElement {
 
     this.dispatch({ type: 'submit' });
     try {
-      await this.boardSession.updateTask(dialog.base.id, {
+      const updated = await this.boardSession.updateTask(dialog.base.id, {
         title,
         description: dialog.fields.description,
         priority: dialog.fields.priority,
@@ -1714,6 +1742,7 @@ export class KanbrawlApp extends LitElement {
       });
       this.dispatch({ type: 'succeed' });
       this.clearError();
+      this.announceFilteredOut(dialog.base, updated);
     } catch (error) {
       this.dispatch({ type: 'fail', message: this.conflictMessage(error) });
     }
@@ -1931,6 +1960,7 @@ export class KanbrawlApp extends LitElement {
     const { projects, expectedRevision, resolve, reject } = e.detail;
     try {
       await this.boardSession.updateProjects(projects, expectedRevision);
+      this.pruneFilterToKnownProjects();
       resolve?.();
       this.clearError();
     } catch (error) {
@@ -2215,6 +2245,66 @@ export class KanbrawlApp extends LitElement {
     return (
       this.board.projects.find((project) => project.id === task.projectId)
         ?.name ?? 'no project'
+    );
+  }
+
+  // --- Quick filters ---
+
+  private get filterProjectIds(): string[] {
+    return this.board.projects.map((project) => project.id);
+  }
+
+  private get filteredTasks(): Task[] {
+    return this.board.tasks.filter((task) =>
+      isTaskVisible(this.taskFilter, task),
+    );
+  }
+
+  private handleToggleAllProjects() {
+    this.taskFilter = toggleAllProjects(this.taskFilter, this.filterProjectIds);
+  }
+
+  private handleToggleProjectFilter(e: CustomEvent<string>) {
+    this.taskFilter = toggleProjectFilter(
+      this.taskFilter,
+      e.detail,
+      this.filterProjectIds,
+    );
+  }
+
+  private handleShowAllProjects() {
+    this.taskFilter = createFilter();
+  }
+
+  /** A deleted project must disappear from the filter selection. */
+  private pruneFilterToKnownProjects() {
+    if (this.taskFilter.mode !== 'selected') return;
+    const known = new Set(this.filterProjectIds);
+    for (const id of this.taskFilter.ids.filter((id) => !known.has(id))) {
+      this.taskFilter = removeProjectFromFilter(
+        this.taskFilter,
+        id,
+        this.filterProjectIds,
+      );
+    }
+  }
+
+  /** Announces a task that just left the current filter, keeping it reachable. */
+  private announceFilteredOut(before: Task | undefined, after: Task) {
+    if (!before) return;
+    if (
+      !isTaskVisible(this.taskFilter, before) ||
+      isTaskVisible(this.taskFilter, after)
+    ) {
+      return;
+    }
+
+    this.notifyWithAction(
+      `“${after.title}” moved to ${this.projectNameOf(after)} — hidden by the current filter.`,
+      'Open',
+      () => {
+        this.openTask(after.id);
+      },
     );
   }
 
@@ -2642,11 +2732,20 @@ export class KanbrawlApp extends LitElement {
             </kanbrawl-button>
           </kanbrawl-banner>`
         : nothing}
+      <kanbrawl-filter-bar
+        .projects=${this.board.projects}
+        .filter=${this.taskFilter}
+        .hiddenCount=${hiddenTaskCount(this.taskFilter, this.board.tasks)}
+        .unclassifiedCount=${unclassifiedTaskCount(this.board.tasks)}
+        @toggle-all=${this.handleToggleAllProjects}
+        @toggle-project=${this.handleToggleProjectFilter}
+        @show-all=${this.handleShowAllProjects}
+      ></kanbrawl-filter-bar>
       <main>
         <div class="board-area">
           <kanbrawl-board
             .columns=${this.board.columns}
-            .tasks=${this.board.tasks}
+            .tasks=${this.filteredTasks}
             .projects=${this.board.projects}
             @create-task-request=${this.handleCreateRequest}
             @update-task=${this.handleUpdateTask}
@@ -2658,7 +2757,21 @@ export class KanbrawlApp extends LitElement {
       </main>
       ${this.notice
         ? html`<div class="notice" role="status">
-            <span>${this.notice}</span>
+            <span>${this.notice.text}</span>
+            ${this.notice.action
+              ? html`<kanbrawl-button
+                  class="banner-action"
+                  variant="ghost"
+                  size="sm"
+                  @click=${() => {
+                    const { action } = this.notice ?? {};
+                    this.notice = undefined;
+                    action?.();
+                  }}
+                >
+                  ${this.notice.actionLabel ?? 'Open'}
+                </kanbrawl-button>`
+              : nothing}
             <kanbrawl-button
               class="banner-action"
               variant="ghost"
