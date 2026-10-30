@@ -36,6 +36,12 @@ const publicTaskSchema = z.object({
     .enum(['P0', 'P1', 'P2'])
     .describe('P0 = urgent/critical, P1 = normal (default), P2 = low priority'),
   assignee: z.string(),
+  projectId: z
+    .string()
+    .optional()
+    .describe(
+      'ID of the project the task belongs to (see get_projects); absent only for tasks predating the project catalog',
+    ),
   lastActor: z
     .string()
     .describe('Who last changed the task (agent name, "human", or empty)'),
@@ -70,6 +76,14 @@ const expectedUpdatedAtSchema = z
   .optional()
   .describe(
     'Optimistic concurrency guard: the task updatedAt value you last saw. The call fails with CONFLICT if the task changed since.',
+  );
+
+const projectIdSchema = z
+  .string()
+  .nullable()
+  .optional()
+  .describe(
+    'ID of the project the task belongs to (required; see get_projects). Omit on updates to keep the current project; an explicit null is rejected with INVALID_PROJECT.',
   );
 
 function toolError(error: unknown): {
@@ -270,6 +284,12 @@ export function registerTools(server: McpServer, store: BoardStore): void {
           .describe(
             'Column name to filter by. Omit to list tasks from every column. Call get_columns for current names.',
           ),
+        projectIds: z
+          .array(z.string())
+          .optional()
+          .describe(
+            'Project IDs to filter by (union). Omit to list tasks from every project. An empty array is rejected with INVALID_PROJECT and an unknown id with PROJECT_NOT_FOUND. Call get_projects for current ids.',
+          ),
         priority: prioritySchema.optional(),
         assignee: z
           .string()
@@ -306,7 +326,7 @@ export function registerTools(server: McpServer, store: BoardStore): void {
         openWorldHint: false,
       },
     },
-    async ({ column, priority, assignee, max, offset }) => {
+    async ({ column, projectIds, priority, assignee, max, offset }) => {
       const columnNames = store.getColumnNames();
       if (column !== undefined && !columnNames.includes(column.trim())) {
         return toolError(
@@ -318,7 +338,38 @@ export function registerTools(server: McpServer, store: BoardStore): void {
         );
       }
 
+      if (projectIds !== undefined) {
+        if (projectIds.length === 0) {
+          return toolError(
+            new BoardError(
+              'INVALID_PROJECT',
+              'projectIds must not be empty; omit it to list tasks from every project.',
+            ),
+          );
+        }
+
+        const known = store.getProjects().map((project) => project.id);
+        const unknown = projectIds.filter((id) => !known.includes(id));
+        if (unknown.length > 0) {
+          return toolError(
+            new BoardError(
+              'PROJECT_NOT_FOUND',
+              `Project with id "${unknown[0]}" does not exist. Available projects: ${known.join(', ')}`,
+              { availableProjects: known },
+            ),
+          );
+        }
+      }
+
       let tasks = store.getTasks(column?.trim());
+      if (projectIds !== undefined) {
+        const selected = new Set(projectIds);
+        tasks = tasks.filter(
+          (task) =>
+            typeof task.projectId === 'string' && selected.has(task.projectId),
+        );
+      }
+
       if (priority) {
         tasks = tasks.filter((t) => t.priority === priority);
       }
@@ -358,7 +409,7 @@ export function registerTools(server: McpServer, store: BoardStore): void {
     {
       title: 'Create Task',
       description:
-        'Create a new task on the board. Call get_columns first if you do not know the column names. Pass clientRequestId to make a retry safe: repeating the same key returns the already created task instead of a duplicate.',
+        'Create a new task on the board. Every task belongs to exactly one project: pass projectId (call get_projects for current ids). Call get_columns first if you do not know the column names. Pass clientRequestId to make a retry safe: repeating the same key returns the already created task instead of a duplicate.',
       inputSchema: {
         title: z
           .string()
@@ -379,6 +430,7 @@ export function registerTools(server: McpServer, store: BoardStore): void {
           .describe(
             'Column to place the task in. Defaults to the first board column. Call get_columns for current names.',
           ),
+        projectId: projectIdSchema,
         priority: prioritySchema.optional(),
         assignee: z
           .string()
@@ -406,16 +458,28 @@ export function registerTools(server: McpServer, store: BoardStore): void {
       title,
       description,
       column,
+      projectId,
       priority,
       assignee,
       actor,
       clientRequestId,
     }) => {
+      // An explicit null is a caller error: only a string may reach the store.
+      if (projectId === null) {
+        return toolError(
+          new BoardError(
+            'INVALID_PROJECT',
+            'projectId must be a project id string.',
+          ),
+        );
+      }
+
       try {
         const task = store.createTask({
           title,
           description,
           column,
+          projectId,
           priority,
           assignee,
           actor,
@@ -465,7 +529,7 @@ export function registerTools(server: McpServer, store: BoardStore): void {
     {
       title: 'Update Task',
       description:
-        "Update a task's title, description, priority, assignee and/or column in one atomic operation. Use expectedUpdatedAt to fail with CONFLICT instead of overwriting somebody else's change.",
+        "Update a task's title, description, priority, assignee, project and/or column in one atomic operation. The task must end up with a project: omit projectId to keep the current one, or pass a new id to move the task to another project. Use expectedUpdatedAt to fail with CONFLICT instead of overwriting somebody else's change.",
       inputSchema: {
         id: z.string().describe('Task ID (UUID)'),
         title: z
@@ -489,6 +553,7 @@ export function registerTools(server: McpServer, store: BoardStore): void {
           .string()
           .optional()
           .describe('New column name. Call get_columns for current names.'),
+        projectId: projectIdSchema,
         actor: actorSchema,
         expectedUpdatedAt: expectedUpdatedAtSchema,
       },
@@ -507,9 +572,21 @@ export function registerTools(server: McpServer, store: BoardStore): void {
       priority,
       assignee,
       column,
+      projectId,
       actor,
       expectedUpdatedAt,
     }) => {
+      // An explicit null is a caller error: it must fail rather than silently
+      // keep the current project.
+      if (projectId === null) {
+        return toolError(
+          new BoardError(
+            'INVALID_PROJECT',
+            'projectId must be a project id string; omit it to keep the current project.',
+          ),
+        );
+      }
+
       try {
         const task = store.updateTask(id, {
           title,
@@ -517,6 +594,7 @@ export function registerTools(server: McpServer, store: BoardStore): void {
           priority,
           assignee,
           column,
+          projectId,
           actor,
           expectedUpdatedAt,
         });

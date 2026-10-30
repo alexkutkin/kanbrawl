@@ -1580,6 +1580,12 @@ export class KanbrawlApp extends LitElement {
       return;
     }
 
+    const { projectId } = dialog.fields;
+    if (!projectId) {
+      this.dispatch({ type: 'fail', message: 'Project is required.' });
+      return;
+    }
+
     this.createRequestId ??= makeRequestId();
     this.dispatch({ type: 'submit' });
     try {
@@ -1589,6 +1595,7 @@ export class KanbrawlApp extends LitElement {
         column: dialog.column,
         priority: dialog.fields.priority,
         assignee: dialog.fields.assignee.trim(),
+        projectId,
         actor: 'web',
         clientRequestId: this.createRequestId,
       });
@@ -1688,6 +1695,12 @@ export class KanbrawlApp extends LitElement {
       return;
     }
 
+    const { projectId } = dialog.fields;
+    if (!projectId) {
+      this.dispatch({ type: 'fail', message: 'Project is required.' });
+      return;
+    }
+
     this.dispatch({ type: 'submit' });
     try {
       await this.boardSession.updateTask(dialog.base.id, {
@@ -1695,6 +1708,7 @@ export class KanbrawlApp extends LitElement {
         description: dialog.fields.description,
         priority: dialog.fields.priority,
         assignee: dialog.fields.assignee.trim(),
+        projectId,
         actor: 'web',
         expectedUpdatedAt: dialog.base.updatedAt,
       });
@@ -2050,6 +2064,27 @@ export class KanbrawlApp extends LitElement {
             />
           </label>
         </div>
+        <label for="task-form-project">Project</label>
+        <select
+          id="task-form-project"
+          .value=${fields.projectId}
+          ?disabled=${this.detailPending}
+          @change=${(e: Event) => {
+            options.onChange({
+              projectId: (e.target as HTMLSelectElement).value,
+            });
+          }}
+        >
+          <option value="" disabled>
+            ${this.board.projects.length > 0
+              ? 'Choose a project…'
+              : 'No projects yet — add one in board settings'}
+          </option>
+          ${this.board.projects.map(
+            (project) =>
+              html`<option value=${project.id}>${project.name}</option>`,
+          )}
+        </select>
         ${this.detailError
           ? html`<div class="form-error" role="alert">${this.detailError}</div>`
           : nothing}
@@ -2058,7 +2093,9 @@ export class KanbrawlApp extends LitElement {
             type="submit"
             class="btn-primary"
             variant="primary"
-            ?disabled=${this.detailPending || !fields.title.trim()}
+            ?disabled=${this.detailPending ||
+            !fields.title.trim() ||
+            !fields.projectId}
           >
             ${this.detailPending ? options.pendingLabel : options.submitLabel}
           </kanbrawl-button>
@@ -2132,6 +2169,9 @@ export class KanbrawlApp extends LitElement {
         <kanbrawl-badge class="detail-badge column" tone="neutral"
           >${task.column}</kanbrawl-badge
         >
+        <kanbrawl-badge class="detail-badge project" tone="neutral"
+          >${this.projectNameOf(task)}</kanbrawl-badge
+        >
         ${this.taskIsStale(task)
           ? html`<kanbrawl-badge
               class="detail-stale"
@@ -2171,12 +2211,21 @@ export class KanbrawlApp extends LitElement {
     `;
   }
 
+  private projectNameOf(task: Task): string {
+    return (
+      this.board.projects.find((project) => project.id === task.projectId)
+        ?.name ?? 'no project'
+    );
+  }
+
   private renderDetailSidebar(task: Task) {
     return html`
       <h3 class="detail-section-label">Details</h3>
       <dl class="detail-meta">
         <dt>Assignee</dt>
         <dd>${task.assignee || '—'}</dd>
+        <dt>Project</dt>
+        <dd>${this.projectNameOf(task)}</dd>
         <dt>Column</dt>
         <dd>${task.column}</dd>
         <dt>Created</dt>
@@ -2598,6 +2647,7 @@ export class KanbrawlApp extends LitElement {
           <kanbrawl-board
             .columns=${this.board.columns}
             .tasks=${this.board.tasks}
+            .projects=${this.board.projects}
             @create-task-request=${this.handleCreateRequest}
             @update-task=${this.handleUpdateTask}
             @delete-task=${this.handleDeleteTask}

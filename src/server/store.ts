@@ -46,6 +46,7 @@ type TaskRow = {
   column_name: string;
   priority: Priority;
   assignee: string;
+  project_id: string | undefined;
   last_actor: string;
   client_request_id: string | undefined;
   created_at: string;
@@ -293,6 +294,9 @@ function normalizeStoredTasks(
       column,
       priority,
       assignee: assignee.slice(0, LIMITS.assignee),
+      // Legacy boards predate the project catalog; classification backfills
+      // the project later (transitional "unclassified" state), so projectId
+      // stays absent here.
       lastActor,
       ...(clientRequestId ? { clientRequestId } : {}),
       createdAt,
@@ -341,6 +345,7 @@ function toTask(row: TaskRow, attachments: AttachmentMeta[]): Task {
     column: row.column_name,
     priority: row.priority,
     assignee: row.assignee,
+    ...(row.project_id ? { projectId: row.project_id } : {}),
     lastActor: row.last_actor,
     ...(row.client_request_id
       ? { clientRequestId: row.client_request_id }
@@ -357,6 +362,7 @@ type TaskFields = {
   priority?: string;
   assignee?: string;
   column?: string;
+  projectId?: string;
 };
 
 type TaskMutationOptions = {
@@ -512,13 +518,13 @@ export class BoardStore {
     this.insertTask = this.database.prepare(
       `INSERT INTO tasks (
         id, title, description, column_name, priority, assignee,
-        last_actor, client_request_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        project_id, last_actor, client_request_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     this.updateTaskRow = this.database.prepare(
       `UPDATE tasks SET
         title = ?, description = ?, column_name = ?, priority = ?,
-        assignee = ?, last_actor = ?, updated_at = ?
+        assignee = ?, project_id = ?, last_actor = ?, updated_at = ?
        WHERE id = ?`,
     );
     this.updateTaskColumn = this.database.prepare(
@@ -593,6 +599,7 @@ export class BoardStore {
           task.column,
           task.priority,
           task.assignee,
+          task.projectId ?? null,
           task.lastActor,
           task.clientRequestId ?? null,
           task.createdAt,
@@ -791,6 +798,24 @@ export class BoardStore {
     return target;
   }
 
+  private requireProject(value: unknown): string {
+    const id = typeof value === 'string' ? value.trim() : '';
+    if (id.length === 0) {
+      throw new BoardError('INVALID_PROJECT', 'A project is required.');
+    }
+
+    const ids = this.readProjects().map((project) => project.id);
+    if (!ids.includes(id)) {
+      throw new BoardError(
+        'PROJECT_NOT_FOUND',
+        `Project with id "${id}" does not exist. Available projects: ${ids.join(', ')}`,
+        { availableProjects: ids },
+      );
+    }
+
+    return id;
+  }
+
   private applyActor(task: Task, actor: string | undefined): void {
     if (actor === undefined) return;
     task.lastActor = actor.trim().slice(0, LIMITS.assignee);
@@ -819,6 +844,7 @@ export class BoardStore {
       task.column,
       task.priority,
       task.assignee,
+      task.projectId ?? null,
       task.lastActor,
       task.updatedAt,
       task.id,
@@ -885,6 +911,7 @@ export class BoardStore {
     column?: string;
     priority?: string;
     assignee?: string;
+    projectId?: string;
     actor?: string;
     clientRequestId?: string;
   }): Task {
@@ -900,6 +927,10 @@ export class BoardStore {
         fields.column === undefined
           ? this.readColumns()[0].name
           : this.requireColumn(fields.column);
+      // A task always belongs to exactly one project: a missing id is a
+      // caller error (INVALID_PROJECT), an unknown one a lookup failure
+      // (PROJECT_NOT_FOUND).
+      const projectId = this.requireProject(fields.projectId);
       const clientRequestId =
         typeof fields.clientRequestId === 'string' &&
         fields.clientRequestId.trim().length > 0
@@ -926,6 +957,7 @@ export class BoardStore {
         column,
         priority,
         assignee,
+        projectId,
         lastActor: (fields.actor ?? assignee).trim().slice(0, LIMITS.assignee),
         ...(clientRequestId ? { clientRequestId } : {}),
         createdAt: timestamp,
@@ -940,6 +972,7 @@ export class BoardStore {
         task.column,
         task.priority,
         task.assignee,
+        task.projectId ?? null,
         task.lastActor,
         task.clientRequestId ?? null,
         task.createdAt,
@@ -965,6 +998,13 @@ export class BoardStore {
     });
   }
 
+  /**
+   * Applies a partial update. Requiredness of the project is an invariant on
+   * the final state, not on every request: an omitted projectId keeps the
+   * current one, an explicit null or unknown id is rejected, and an edit of a
+   * task that has no project yet must choose one. A move (a change of
+   * `column` alone) never touches the project.
+   */
   updateTask(id: string, fields: TaskFields & TaskMutationOptions): Task {
     return this.mutate(() => {
       const task = this.findTask(id);
@@ -995,6 +1035,25 @@ export class BoardStore {
       if (fields.column !== undefined) {
         task.column = this.requireColumn(fields.column);
         changed = true;
+      }
+
+      const editsTask =
+        fields.title !== undefined ||
+        fields.description !== undefined ||
+        fields.priority !== undefined ||
+        fields.assignee !== undefined ||
+        fields.projectId !== undefined;
+
+      if (fields.projectId !== undefined) {
+        task.projectId = this.requireProject(fields.projectId);
+        changed = true;
+      }
+
+      if (editsTask && task.projectId === undefined) {
+        throw new BoardError(
+          'INVALID_PROJECT',
+          'This task has no project yet; edits must choose one.',
+        );
       }
 
       if (fields.actor !== undefined) {

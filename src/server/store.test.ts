@@ -15,6 +15,7 @@ import {
   type BoardEvent,
   type Column,
   type Project,
+  type Task,
 } from '../shared/board.js';
 import { migrate } from './migrations.js';
 import { BoardStore } from './store.js';
@@ -86,12 +87,43 @@ describe('BoardStore', () => {
 
   beforeEach(() => {
     ({ store, databasePath, dir } = createTestStore());
+    testProject = undefined;
   });
 
   afterEach(() => {
     store.dispose();
     rmSync(dir, { recursive: true, force: true });
   });
+
+  // Created through a separate connection so the seeding emits no events and
+  // bumps no revision on the store under test.
+  let testProject: Project | undefined;
+
+  function ensureTestProject(): Project {
+    if (!testProject) {
+      const seeder = new BoardStore(databasePath, { watch: false });
+      try {
+        testProject = seeder.updateProjects([
+          { name: 'Test project', folder: '' },
+        ]).projects[0];
+      } finally {
+        seeder.dispose();
+      }
+    }
+
+    return testProject;
+  }
+
+  // Most tests just need a valid task; the project contract is covered by the
+  // "task projects" tests below. An explicit projectId is always honored.
+  function newTask(fields: Parameters<BoardStore['createTask']>[0]): Task {
+    return store.createTask({
+      ...(fields.projectId === undefined
+        ? { projectId: ensureTestProject().id }
+        : {}),
+      ...fields,
+    });
+  }
 
   // --- Initialization ---
   describe('initialization', () => {
@@ -107,7 +139,7 @@ describe('BoardStore', () => {
     });
 
     it('loads existing data from the database', () => {
-      store.createTask({ title: 'Persisted' });
+      newTask({ title: 'Persisted' });
       const loaded = new BoardStore(databasePath, { watch: false });
       expect(loaded.getColumnNames()).toEqual(DEFAULT_COLUMN_NAMES);
       expect(loaded.getTasks()).toHaveLength(1);
@@ -225,7 +257,7 @@ describe('BoardStore', () => {
     });
 
     it('does not import JSON into a database that already has data', () => {
-      store.createTask({ title: 'Database wins' });
+      newTask({ title: 'Database wins' });
       store.dispose();
       writeLegacyJson(dir, {
         columns: [{ name: 'Legacy', sortBy: 'created', sortOrder: 'asc' }],
@@ -525,14 +557,14 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
       });
       expect(store.getColumns()).toHaveLength(4);
 
-      store.createTask({ title: 'Original' });
+      newTask({ title: 'Original' });
       const tasks = store.getTasks();
       tasks[0].title = 'Mutated';
       expect(store.getTasks()[0].title).toBe('Original');
     });
 
     it('getTask returns a clone and undefined for unknown ids', () => {
-      const created = store.createTask({ title: 'Find me' });
+      const created = newTask({ title: 'Find me' });
       const found = store.getTask(created.id)!;
       found.title = 'Mutated';
       expect(store.getTask(created.id)!.title).toBe('Find me');
@@ -540,18 +572,172 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
     });
 
     it('filters tasks by column', () => {
-      store.createTask({ title: 'A' });
-      store.createTask({ title: 'B', column: 'Done' });
+      newTask({ title: 'A' });
+      newTask({ title: 'B', column: 'Done' });
       expect(store.getTasks('Todo')).toHaveLength(1);
       expect(store.getTasks('Done')).toHaveLength(1);
       expect(store.getTasks('In progress')).toHaveLength(0);
     });
   });
 
+  // --- task projects ---
+  describe('task projects', () => {
+    function seedProject(name = 'Kanbrawl'): Project {
+      const seeder = new BoardStore(databasePath, { watch: false });
+      try {
+        return seeder.updateProjects([{ name, folder: '' }]).projects[0];
+      } finally {
+        seeder.dispose();
+      }
+    }
+
+    it('requires a project when creating a task', () => {
+      seedProject();
+      const missing = expectBoardError(() =>
+        store.createTask({ title: 'Orphan' }),
+      );
+      expect(missing.code).toBe('INVALID_PROJECT');
+
+      const nulled = expectBoardError(() =>
+        store.createTask({
+          title: 'Orphan',
+          projectId: null as unknown as string,
+        }),
+      );
+      expect(nulled.code).toBe('INVALID_PROJECT');
+
+      const blank = expectBoardError(() =>
+        store.createTask({ title: 'Orphan', projectId: '   ' }),
+      );
+      expect(blank.code).toBe('INVALID_PROJECT');
+      expect(store.getTasks()).toEqual([]);
+    });
+
+    it('rejects an unknown project with PROJECT_NOT_FOUND', () => {
+      seedProject();
+      const error = expectBoardError(() =>
+        store.createTask({
+          title: 'Orphan',
+          projectId: '00000000-0000-0000-0000-000000000000',
+        }),
+      );
+      expect(error.code).toBe('PROJECT_NOT_FOUND');
+      expect(store.getTasks()).toEqual([]);
+    });
+
+    it('stores the project and carries it in task events', () => {
+      const project = seedProject();
+      const events: BoardEvent[] = [];
+      store.onChange((event) => events.push(event));
+      const task = store.createTask({ title: 'Owned', projectId: project.id });
+      expect(task.projectId).toBe(project.id);
+      expect(store.getTask(task.id)!.projectId).toBe(project.id);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        type: 'task_created',
+        task: { id: task.id, projectId: project.id },
+      });
+    });
+
+    it('keeps the current project when an update omits it', () => {
+      const project = seedProject();
+      const task = store.createTask({
+        title: 'Owned',
+        projectId: project.id,
+      });
+      const events: BoardEvent[] = [];
+      store.onChange((event) => events.push(event));
+      const updated = store.updateTask(task.id, { title: 'Renamed' });
+      expect(updated.projectId).toBe(project.id);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        type: 'task_updated',
+        task: { id: task.id, projectId: project.id },
+      });
+    });
+
+    it('rejects an explicit null or unknown project on update', () => {
+      const project = seedProject();
+      const task = store.createTask({
+        title: 'Owned',
+        projectId: project.id,
+      });
+
+      const nulled = expectBoardError(() =>
+        store.updateTask(task.id, {
+          projectId: null as unknown as string,
+        }),
+      );
+      expect(nulled.code).toBe('INVALID_PROJECT');
+
+      const unknown = expectBoardError(() =>
+        store.updateTask(task.id, {
+          projectId: '00000000-0000-0000-0000-000000000000',
+        }),
+      );
+      expect(unknown.code).toBe('PROJECT_NOT_FOUND');
+      expect(store.getTask(task.id)!.projectId).toBe(project.id);
+    });
+
+    function unclassify(taskId: string): void {
+      const database = new DatabaseSync(databasePath);
+      try {
+        database
+          .prepare('UPDATE tasks SET project_id = NULL WHERE id = ?')
+          .run(taskId);
+      } finally {
+        database.close();
+      }
+    }
+
+    it('requires choosing a project when editing a task without one', () => {
+      const project = seedProject();
+      const task = store.createTask({
+        title: 'Legacy',
+        projectId: project.id,
+      });
+      unclassify(task.id);
+
+      const error = expectBoardError(() =>
+        store.updateTask(task.id, { title: 'Renamed' }),
+      );
+      expect(error.code).toBe('INVALID_PROJECT');
+      expect(store.getTask(task.id)!.title).toBe('Legacy');
+
+      const classified = store.updateTask(task.id, {
+        title: 'Renamed',
+        projectId: project.id,
+      });
+      expect(classified.projectId).toBe(project.id);
+      expect(classified.title).toBe('Renamed');
+    });
+
+    it('never touches the project when moving between columns', () => {
+      const project = seedProject();
+      const task = store.createTask({
+        title: 'Movable',
+        projectId: project.id,
+      });
+      const moved = store.moveTask(task.id, 'Done');
+      expect(moved.column).toBe('Done');
+      expect(moved.projectId).toBe(project.id);
+
+      // A move is project-neutral, also for a task that has no project yet.
+      const legacy = store.createTask({
+        title: 'Legacy',
+        projectId: project.id,
+      });
+      unclassify(legacy.id);
+      const movedLegacy = store.moveTask(legacy.id, 'Blocked');
+      expect(movedLegacy.column).toBe('Blocked');
+      expect(movedLegacy.projectId).toBeUndefined();
+    });
+  });
+
   // --- createTask ---
   describe('createTask', () => {
     it('creates a task with defaults', () => {
-      const task = store.createTask({ title: 'My task' });
+      const task = newTask({ title: 'My task' });
       expect(task.title).toBe('My task');
       expect(task.column).toBe('Todo');
       expect(task.priority).toBe('P1');
@@ -564,7 +750,7 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
     });
 
     it('creates a task with all fields and an actor', () => {
-      const task = store.createTask({
+      const task = newTask({
         title: 'Task',
         description: 'Description',
         column: 'In progress',
@@ -579,7 +765,7 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
     });
 
     it('trims title and assignee', () => {
-      const task = store.createTask({
+      const task = newTask({
         title: '  Trimmed  ',
         assignee: '  bob ',
       });
@@ -588,24 +774,24 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
     });
 
     it('rejects invalid input with stable codes', () => {
-      expect(() => store.createTask({ title: '   ' })).toThrow(/Title/);
-      expect(() => store.createTask({ title: 'x'.repeat(201) })).toThrow(/200/);
-      expect(() => store.createTask({ title: 'Task', priority: 'P9' })).toThrow(
+      expect(() => newTask({ title: '   ' })).toThrow(/Title/);
+      expect(() => newTask({ title: 'x'.repeat(201) })).toThrow(/200/);
+      expect(() => newTask({ title: 'Task', priority: 'P9' })).toThrow(
         /Priority/,
       );
       expect(() =>
-        store.createTask({ title: 'Task', description: 'x'.repeat(4001) }),
+        newTask({ title: 'Task', description: 'x'.repeat(4001) }),
       ).toThrow(/4000/);
       expect(() =>
-        store.createTask({ title: 'Task', assignee: 'x'.repeat(101) }),
+        newTask({ title: 'Task', assignee: 'x'.repeat(101) }),
       ).toThrow(/100/);
-      expect(() =>
-        store.createTask({ title: 'Task', column: 'Nonexistent' }),
-      ).toThrow(/does not exist/);
+      expect(() => newTask({ title: 'Task', column: 'Nonexistent' })).toThrow(
+        /does not exist/,
+      );
     });
 
     it('persists to disk and leaves no lock or temporary files', () => {
-      store.createTask({ title: 'Persisted' });
+      newTask({ title: 'Persisted' });
       expect(readBoard(databasePath).tasks[0].title).toBe('Persisted');
       expect(
         readdirSync(dir).filter((name) => /\.(tmp|lock)$/.test(name)),
@@ -615,19 +801,19 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
     it('emits task_created once', () => {
       const events: BoardEvent[] = [];
       store.onChange((event) => events.push(event));
-      store.createTask({ title: 'Evented' });
+      newTask({ title: 'Evented' });
       expect(events).toHaveLength(1);
       expect(events[0].type).toBe('task_created');
     });
 
     it('is idempotent when clientRequestId is reused', () => {
-      const first = store.createTask({
+      const first = newTask({
         title: 'Once',
         clientRequestId: 'key-1',
       });
       const events: BoardEvent[] = [];
       store.onChange((event) => events.push(event));
-      const second = store.createTask({
+      const second = newTask({
         title: 'Once again',
         clientRequestId: 'key-1',
       });
@@ -640,7 +826,7 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
   // --- updateTask / moveTask ---
   describe('updateTask and moveTask', () => {
     it('updates fields and leaves others unchanged', () => {
-      const task = store.createTask({
+      const task = newTask({
         title: 'Task',
         description: 'Original desc',
         assignee: 'alice',
@@ -656,7 +842,7 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
     });
 
     it('updates fields and column in one operation with one event', () => {
-      const task = store.createTask({ title: 'Task' });
+      const task = newTask({ title: 'Task' });
       const events: BoardEvent[] = [];
       store.onChange((event) => events.push(event));
       const updated = store.updateTask(task.id, {
@@ -674,7 +860,7 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
     });
 
     it('does not partially apply an invalid column', () => {
-      const task = store.createTask({ title: 'Task' });
+      const task = newTask({ title: 'Task' });
       expect(() =>
         store.updateTask(task.id, { title: 'Changed', column: 'Nope' }),
       ).toThrow(/does not exist/);
@@ -682,7 +868,7 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
     });
 
     it('emits task_updated for field-only changes', () => {
-      const task = store.createTask({ title: 'Task' });
+      const task = newTask({ title: 'Task' });
       const events: BoardEvent[] = [];
       store.onChange((event) => events.push(event));
       store.updateTask(task.id, { description: 'New desc' });
@@ -691,7 +877,7 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
     });
 
     it('rejects stale writes with CONFLICT and returns the current task', async () => {
-      const task = store.createTask({ title: 'Task' });
+      const task = newTask({ title: 'Task' });
       await delay(2);
       store.updateTask(task.id, { title: 'First writer' });
 
@@ -714,7 +900,7 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
     });
 
     it('accepts a matching expectedUpdatedAt', () => {
-      const task = store.createTask({ title: 'Task' });
+      const task = newTask({ title: 'Task' });
       const updated = store.updateTask(task.id, {
         title: 'Safe',
         expectedUpdatedAt: task.updatedAt,
@@ -733,7 +919,7 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
   // --- deleteTask ---
   describe('deleteTask', () => {
     it('deletes and persists', () => {
-      const task = store.createTask({ title: 'To delete' });
+      const task = newTask({ title: 'To delete' });
       const events: BoardEvent[] = [];
       store.onChange((event) => events.push(event));
       store.deleteTask(task.id);
@@ -743,7 +929,7 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
     });
 
     it('deletes the task attachments with it', () => {
-      const task = store.createTask({ title: 'With image' });
+      const task = newTask({ title: 'With image' });
       const meta = store.addAttachment(task.id, {
         data: pngBytes(1),
         filename: 'shot.png',
@@ -788,7 +974,7 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
       const blocked = store
         .getColumns()
         .find((column) => column.name === 'Blocked')!;
-      const task = store.createTask({ title: 'Stays', column: 'Blocked' });
+      const task = newTask({ title: 'Stays', column: 'Blocked' });
       const events: BoardEvent[] = [];
       store.onChange((event) => events.push(event));
 
@@ -808,7 +994,7 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
     });
 
     it('moves tasks from a removed column to the requested destination', () => {
-      const task = store.createTask({ title: 'Homeless', column: 'Blocked' });
+      const task = newTask({ title: 'Homeless', column: 'Blocked' });
       store.updateColumns(
         store.getColumns().filter((column) => column.name !== 'Blocked'),
         'Done',
@@ -1067,15 +1253,7 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
         { name: 'Holds tasks', folder: '' },
       ]);
       const project = projects[0];
-      const task = store.createTask({ title: 'Referencing task' });
-      const database = new DatabaseSync(databasePath);
-      try {
-        database
-          .prepare('UPDATE tasks SET project_id = ? WHERE id = ?')
-          .run(project.id, task.id);
-      } finally {
-        database.close();
-      }
+      newTask({ title: 'Referencing task', projectId: project.id });
 
       const error = expectBoardError(() =>
         store.updateProjects([{ name: 'New project', folder: '' }]),
@@ -1104,7 +1282,7 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
     }
 
     it('stores an image and exposes it on the task and the board', () => {
-      const task = store.createTask({ title: 'With image' });
+      const task = newTask({ title: 'With image' });
       const meta = addPng(task.id);
       expect(meta.mimeType).toBe('image/png');
       expect(meta.size).toBe(pngBytes(1).length);
@@ -1120,7 +1298,7 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
     });
 
     it('sniffs the type and ignores the filename extension', () => {
-      const task = store.createTask({ title: 'Sniffed' });
+      const task = newTask({ title: 'Sniffed' });
       const meta = store.addAttachment(task.id, {
         data: pngBytes(2),
         filename: 'photo.jpg',
@@ -1130,7 +1308,7 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
     });
 
     it('sanitizes the filename and falls back to a default', () => {
-      const task = store.createTask({ title: 'Names' });
+      const task = newTask({ title: 'Names' });
       expect(
         store.addAttachment(task.id, {
           data: pngBytes(3),
@@ -1143,7 +1321,7 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
     });
 
     it('deduplicates identical images on one task', () => {
-      const task = store.createTask({ title: 'Same image' });
+      const task = newTask({ title: 'Same image' });
       const first = addPng(task.id, 5);
       const events: BoardEvent[] = [];
       store.onChange((event) => events.push(event));
@@ -1154,7 +1332,7 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
     });
 
     it('rejects non-images, empty data and oversized images', () => {
-      const task = store.createTask({ title: 'Rejected' });
+      const task = newTask({ title: 'Rejected' });
       expect(() =>
         store.addAttachment(task.id, {
           data: new TextEncoder().encode('not an image'),
@@ -1173,7 +1351,7 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
     });
 
     it('limits the number of images per task', () => {
-      const task = store.createTask({ title: 'Limit' });
+      const task = newTask({ title: 'Limit' });
       for (let index = 0; index < LIMITS.attachmentsPerTask; index += 1) {
         addPng(task.id, 10 + index);
       }
@@ -1182,7 +1360,7 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
     });
 
     it('emits attachments_changed without touching updatedAt', () => {
-      const task = store.createTask({ title: 'Evented image' });
+      const task = newTask({ title: 'Evented image' });
       const events: BoardEvent[] = [];
       store.onChange((event) => events.push(event));
       const meta = addPng(task.id);
@@ -1197,7 +1375,7 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
     });
 
     it('deletes an image and reports the remaining list', () => {
-      const task = store.createTask({ title: 'Delete image' });
+      const task = newTask({ title: 'Delete image' });
       const first = addPng(task.id, 20);
       const second = addPng(task.id, 21);
       const events: BoardEvent[] = [];
@@ -1216,7 +1394,7 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
       expect(() => {
         store.deleteAttachment('nonexistent');
       }).toThrow(/not found/);
-      const task = store.createTask({ title: 'Missing target' });
+      const task = newTask({ title: 'Missing target' });
       expect(() =>
         store.addAttachment('nonexistent', { data: pngBytes(30) }),
       ).toThrow(/not found/);
@@ -1228,10 +1406,13 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
   describe('shared database safety', () => {
     it('sees writes made by another store instance', () => {
       const other = new BoardStore(databasePath, { watch: false });
-      const created = other.createTask({ title: 'From another process' });
+      const created = other.createTask({
+        title: 'From another process',
+        projectId: ensureTestProject().id,
+      });
       expect(store.getTask(created.id)!.title).toBe('From another process');
 
-      store.createTask({ title: 'From this process' });
+      newTask({ title: 'From this process' });
       expect(other.getTasks()).toHaveLength(2);
       other.dispose();
     });
@@ -1242,7 +1423,10 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
       const events: BoardEvent[] = [];
       store.onChange((event) => events.push(event));
       const other = new BoardStore(databasePath, { watch: false });
-      other.createTask({ title: 'External' });
+      other.createTask({
+        title: 'External',
+        projectId: ensureTestProject().id,
+      });
 
       const deadline = Date.now() + 4000;
       while (Date.now() < deadline && events.length === 0) {
@@ -1263,12 +1447,12 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
       const unsubscribe = store.onChange((event) => events1.push(event));
       store.onChange((event) => events2.push(event));
 
-      store.createTask({ title: 'Task' });
+      newTask({ title: 'Task' });
       expect(events1).toHaveLength(1);
       expect(events2).toHaveLength(1);
 
       unsubscribe();
-      store.createTask({ title: 'Another' });
+      newTask({ title: 'Another' });
       expect(events1).toHaveLength(1);
       expect(events2).toHaveLength(2);
     });

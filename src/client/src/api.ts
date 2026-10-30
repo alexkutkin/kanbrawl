@@ -81,6 +81,7 @@ export type CreateTaskFields = {
   column?: string;
   priority?: string;
   assignee?: string;
+  projectId?: string;
   actor?: string;
   clientRequestId?: string;
 };
@@ -99,6 +100,7 @@ export type UpdateTaskFields = {
   column?: string;
   priority?: string;
   assignee?: string;
+  projectId?: string;
   actor?: string;
   expectedUpdatedAt?: string;
 };

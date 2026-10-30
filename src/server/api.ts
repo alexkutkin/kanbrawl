@@ -9,9 +9,25 @@ import { LIMITS, type Column, type Project } from '../shared/board.js';
 import { BoardError } from './errors.js';
 import type { BoardStore } from './store.js';
 
+/**
+ * Normalizes the request body's projectId before it reaches the store. An
+ * explicit null (or any non-string) is a caller error and fails with
+ * INVALID_PROJECT; undefined means "not sent" and keeps the current project
+ * on updates.
+ */
+function optionalProjectId(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'string') return value;
+  throw new BoardError(
+    'INVALID_PROJECT',
+    'projectId must be a project id string.',
+  );
+}
+
 const STATUS_BY_CODE: Record<string, number> = {
   TASK_NOT_FOUND: 404,
   COLUMN_NOT_FOUND: 404,
+  PROJECT_NOT_FOUND: 404,
   ATTACHMENT_NOT_FOUND: 404,
   DUPLICATE_COLUMN: 409,
   DUPLICATE_PROJECT: 409,
@@ -52,6 +68,7 @@ type TaskBody = {
   column?: string;
   priority?: string;
   assignee?: string;
+  projectId?: string;
   expectedUpdatedAt?: string;
   clientRequestId?: string;
   actor?: string;
@@ -86,6 +103,7 @@ export function createApiRouter(store: BoardStore): Router {
         column: body.column,
         priority: body.priority,
         assignee: body.assignee,
+        projectId: optionalProjectId(body.projectId),
         clientRequestId: body.clientRequestId,
         actor: actorFrom(request, body),
       });
@@ -105,6 +123,7 @@ export function createApiRouter(store: BoardStore): Router {
         column: body.column,
         priority: body.priority,
         assignee: body.assignee,
+        projectId: optionalProjectId(body.projectId),
         expectedUpdatedAt: body.expectedUpdatedAt,
         actor: actorFrom(request, body),
       });

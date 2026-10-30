@@ -14,8 +14,16 @@ const TASK: Task = {
   priority: 'P0',
   assignee: 'alice',
   lastActor: 'web',
+  projectId: 'proj-1',
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-02T00:00:00.000Z',
+};
+
+/** A task predating the project catalog: no project until it is edited. */
+const UNCLASSIFIED: Task = {
+  ...TASK,
+  id: 'task-2',
+  projectId: undefined,
 };
 
 const VIEW: TaskDialogState = { mode: 'view', taskId: TASK.id };
@@ -28,6 +36,7 @@ const EDIT: TaskDialogState = {
     description: TASK.description,
     priority: TASK.priority,
     assignee: TASK.assignee,
+    projectId: 'proj-1',
   },
   pending: false,
 };
@@ -35,7 +44,13 @@ const EDIT: TaskDialogState = {
 const CREATE: TaskDialogState = {
   mode: 'create',
   column: 'Todo',
-  fields: { title: 'New', description: '', priority: 'P1', assignee: '' },
+  fields: {
+    title: 'New',
+    description: '',
+    priority: 'P1',
+    assignee: '',
+    projectId: 'proj-1',
+  },
   images: [],
   pending: false,
 };
@@ -68,7 +83,13 @@ describe('task dialog transition', () => {
     expect(state).toEqual({
       mode: 'create',
       column: 'Blocked',
-      fields: { title: '', description: '', priority: 'P1', assignee: '' },
+      fields: {
+        title: '',
+        description: '',
+        priority: 'P1',
+        assignee: '',
+        projectId: '',
+      },
       images: [],
       pending: false,
     });
@@ -85,6 +106,7 @@ describe('task dialog transition', () => {
         description: 'Details',
         priority: 'P0',
         assignee: 'alice',
+        projectId: 'proj-1',
       },
       pending: false,
     });
@@ -188,6 +210,48 @@ describe('task dialog transition', () => {
     expect(transition(pending, { type: 'submit' })).toBe(pending);
 
     expect(transition(VIEW, { type: 'submit' })).toBe(VIEW);
+  });
+
+  it('blocks submit without a project', () => {
+    const noProject: TaskDialogState = {
+      ...CREATE,
+      fields: { ...CREATE.fields, projectId: '' },
+    };
+
+    const state = transition(noProject, { type: 'submit' });
+    expect(state.mode === 'create' && state.pending).toBe(false);
+    expect(state.mode === 'create' && state.error).toBe('Project is required.');
+  });
+
+  it('blocks editing an unclassified task until a project is chosen', () => {
+    const started = transition(VIEW, {
+      type: 'startEdit',
+      task: UNCLASSIFIED,
+    });
+    expect(started.mode === 'edit' && started.fields.projectId).toBe('');
+
+    const blocked = transition(started, { type: 'submit' });
+    expect(blocked.mode === 'edit' && blocked.pending).toBe(false);
+    expect(blocked.mode === 'edit' && blocked.error).toBe(
+      'Project is required.',
+    );
+
+    const chosen = transition(blocked, {
+      type: 'change',
+      patch: { projectId: 'proj-2' },
+    });
+    const pending = transition(chosen, { type: 'submit' });
+    expect(pending.mode === 'edit' && pending.pending).toBe(true);
+  });
+
+  it('blocks submit when the project is cleared mid-edit', () => {
+    const cleared = transition(EDIT, {
+      type: 'change',
+      patch: { projectId: '' },
+    });
+    const state = transition(cleared, { type: 'submit' });
+    expect(state.mode === 'edit' && state.pending).toBe(false);
+    expect(state.mode === 'edit' && state.error).toBe('Project is required.');
   });
 
   it('clears pending and records the error on failure', () => {

@@ -34,6 +34,8 @@ export type Task = {
   priority: Priority;
   assignee: string;
   lastActor: string;
+  /** Id of the owning project; absent only for tasks predating the catalog. */
+  projectId?: string;
   clientRequestId?: string;
   createdAt: string;
   updatedAt: string;

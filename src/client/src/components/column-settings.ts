@@ -168,6 +168,17 @@ export class KanbrawlColumnSettings extends LitElement {
       border-top: 1px solid var(--border-default);
     }
 
+    .project-task-count {
+      flex-shrink: 0;
+      align-self: center;
+      font-family: 'Space Mono', monospace;
+      font-size: 11px;
+      color: var(--text-dimmed);
+      background: var(--count-bg);
+      padding: 2px 8px;
+      border-radius: 10px;
+    }
+
     .folder-row {
       display: flex;
       gap: 6px;
@@ -451,6 +462,11 @@ export class KanbrawlColumnSettings extends LitElement {
     this.editProjects = this.editProjects.filter(
       (_, index_) => index_ !== index,
     );
+  }
+
+  /** Tasks currently holding this project; a project with any cannot be removed. */
+  private projectTaskCount(project: Project): number {
+    return this.tasks.filter((task) => task.projectId === project.id).length;
   }
 
   private moveProject(index: number, direction: -1 | 1) {
@@ -737,8 +753,9 @@ export class KanbrawlColumnSettings extends LitElement {
                   filesystem. Agents manage the same list over MCP.
                 </p>
                 <div class="entry-list projects-list">
-                  ${this.editProjects.map(
-                    (project, index) => html`
+                  ${this.editProjects.map((project, index) => {
+                    const taskCount = this.projectTaskCount(project);
+                    return html`
                       <div class="entry-row">
                         <div class="move-btns">
                           <kanbrawl-button
@@ -784,15 +801,22 @@ export class KanbrawlColumnSettings extends LitElement {
                             );
                           }}
                         />
+                        <span
+                          class="project-task-count"
+                          title="${taskCount} task(s) in this project"
+                          >${taskCount}</span
+                        >
                         <kanbrawl-button
                           class="remove-btn"
                           variant="danger-outline"
                           icon
-                          ?disabled=${this.pending}
+                          ?disabled=${this.pending || taskCount > 0}
                           @click=${() => {
                             this.removeProject(index);
                           }}
-                          title="Remove project"
+                          title=${taskCount > 0
+                            ? `Move its ${taskCount} task(s) to another project first`
+                            : 'Remove project'}
                           aria-label="Remove ${project.name || 'project'}"
                         >
                           ✕
@@ -814,8 +838,8 @@ export class KanbrawlColumnSettings extends LitElement {
                           }}
                         />
                       </div>
-                    `,
-                  )}
+                    `;
+                  })}
                 </div>
                 <kanbrawl-button
                   class="add-btn"
