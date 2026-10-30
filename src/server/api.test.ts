@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
@@ -61,6 +62,8 @@ describe('REST API', () => {
       expect(
         res.body.columns.every((c: { id?: string }) => Boolean(c.id)),
       ).toBe(true);
+      expect(res.body.projects).toEqual([]);
+      expect(res.body.projectsRevision).toBe(0);
       expect(res.body.tasks).toEqual([]);
     });
   });
@@ -328,6 +331,176 @@ describe('REST API', () => {
     it('returns 400 when columns is missing', async () => {
       const res = await request(app).put('/api/columns').send({});
       expect(res.status).toBe(400);
+    });
+  });
+
+  // --- PUT /api/projects ---
+  describe('PUT /api/projects', () => {
+    it('creates, renames, reorders and deletes in full-list replacements', async () => {
+      const created = await request(app)
+        .put('/api/projects')
+        .send({
+          projects: [
+            { name: 'Kanbrawl', folder: '/code/kanbrawl' },
+            { name: 'Ops', folder: '/code/ops' },
+          ],
+        });
+
+      expect(created.status).toBe(200);
+      expect(created.body.revision).toBe(1);
+      expect(created.body.projects).toHaveLength(2);
+      expect(created.body.projects[0]).toMatchObject({
+        name: 'Kanbrawl',
+        folder: '/code/kanbrawl',
+      });
+      const [first, second] = created.body.projects;
+
+      const updated = await request(app)
+        .put('/api/projects')
+        .send({
+          projects: [
+            { id: second.id, name: 'Runbook', folder: '/code/runbook' },
+            { id: first.id, name: 'Kanbrawl', folder: '/code/kanbrawl' },
+          ],
+        });
+
+      expect(updated.status).toBe(200);
+      expect(updated.body.revision).toBe(2);
+      expect(updated.body.projects).toEqual([
+        { id: second.id, name: 'Runbook', folder: '/code/runbook' },
+        { id: first.id, name: 'Kanbrawl', folder: '/code/kanbrawl' },
+      ]);
+
+      const board = await request(app).get('/api/board');
+      expect(board.body.projects).toEqual(updated.body.projects);
+      expect(board.body.projectsRevision).toBe(2);
+    });
+
+    it('allows an empty project list', async () => {
+      const res = await request(app)
+        .put('/api/projects')
+        .send({ projects: [] });
+
+      expect(res.status).toBe(200);
+      expect(res.body.projects).toEqual([]);
+      expect(res.body.revision).toBe(1);
+    });
+
+    it('returns 400 when projects is not an array', async () => {
+      const res = await request(app)
+        .put('/api/projects')
+        .send({ projects: 'not-an-array' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_PROJECTS');
+
+      const missing = await request(app).put('/api/projects').send({});
+      expect(missing.status).toBe(400);
+      expect(missing.body.code).toBe('INVALID_PROJECTS');
+    });
+
+    it('returns 409 for duplicate project names', async () => {
+      const res = await request(app)
+        .put('/api/projects')
+        .send({
+          projects: [
+            { name: 'Kanbrawl', folder: '/a' },
+            { name: 'Kanbrawl', folder: '/b' },
+          ],
+        });
+
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe('DUPLICATE_PROJECT');
+    });
+
+    it('returns 409 CONFLICT for a stale expectedRevision', async () => {
+      await request(app)
+        .put('/api/projects')
+        .send({ projects: [{ name: 'Kanbrawl', folder: '' }] });
+
+      const res = await request(app)
+        .put('/api/projects')
+        .send({
+          projects: [{ name: 'Overwritten', folder: '' }],
+          expectedRevision: 0,
+        });
+
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe('CONFLICT');
+      expect(res.body.details.currentRevision).toBe(1);
+      expect(
+        res.body.details.projects.map((p: { name: string }) => p.name),
+      ).toEqual(['Kanbrawl']);
+    });
+
+    it('accepts a matching expectedRevision', async () => {
+      await request(app)
+        .put('/api/projects')
+        .send({ projects: [{ name: 'Kanbrawl', folder: '' }] });
+
+      const res = await request(app)
+        .put('/api/projects')
+        .send({
+          projects: [{ name: 'Guarded', folder: '' }],
+          expectedRevision: 1,
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.revision).toBe(2);
+    });
+
+    it('rolls back the whole change when one item is rejected', async () => {
+      await request(app)
+        .put('/api/projects')
+        .send({ projects: [{ name: 'Kanbrawl', folder: '/a' }] });
+
+      const res = await request(app)
+        .put('/api/projects')
+        .send({
+          projects: [
+            { name: 'Renamed', folder: '/a' },
+            { name: 'Renamed', folder: '/b' },
+          ],
+        });
+
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe('DUPLICATE_PROJECT');
+
+      const board = await request(app).get('/api/board');
+      expect(board.body.projects.map((p: { name: string }) => p.name)).toEqual([
+        'Kanbrawl',
+      ]);
+      expect(board.body.projectsRevision).toBe(1);
+    });
+
+    it('returns 409 PROJECT_NOT_EMPTY with counts for a busy project', async () => {
+      const created = await request(app)
+        .put('/api/projects')
+        .send({ projects: [{ name: 'Holds tasks', folder: '' }] });
+      const project = created.body.projects[0];
+
+      const task = await request(app)
+        .post('/api/tasks')
+        .send({ title: 'Referencing task' });
+      const database = new DatabaseSync(join(dir, 'kanbrawl.db'));
+      try {
+        database
+          .prepare('UPDATE tasks SET project_id = ? WHERE id = ?')
+          .run(project.id, task.body.id);
+      } finally {
+        database.close();
+      }
+
+      const res = await request(app)
+        .put('/api/projects')
+        .send({ projects: [] });
+
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe('PROJECT_NOT_EMPTY');
+      expect(res.body.details).toEqual({
+        projectId: project.id,
+        taskCount: 1,
+      });
     });
   });
 
