@@ -4,7 +4,10 @@ FROM node:26-alpine AS build
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci
+# --ignore-scripts: the prepare script exists for git-based installs and
+# cannot run here (its inputs are not copied yet); production deps need no
+# install scripts.
+RUN npm ci --ignore-scripts
 
 COPY tsconfig.json tsconfig.build.json ./
 COPY bin ./bin
@@ -16,7 +19,7 @@ ENV NODE_ENV=production
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/bin ./bin
