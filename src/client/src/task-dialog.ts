@@ -5,6 +5,8 @@ export type TaskFields = {
   description: string;
   priority: Priority;
   assignee: string;
+  /** Project id; empty string means "not chosen yet" and blocks submission. */
+  projectId: string;
 };
 
 export type StagedImage = {
@@ -53,6 +55,9 @@ function fieldsFromTask(task: Task): TaskFields {
     description: task.description,
     priority: task.priority,
     assignee: task.assignee,
+    // A task predating the project catalog starts with no project; the edit
+    // form must choose one before it can be saved (final-state requiredness).
+    projectId: task.projectId ?? '',
   };
 }
 
@@ -69,7 +74,13 @@ export function transition(
       return {
         mode: 'create',
         column: action.column,
-        fields: { title: '', description: '', priority: 'P1', assignee: '' },
+        fields: {
+          title: '',
+          description: '',
+          priority: 'P1',
+          assignee: '',
+          projectId: '',
+        },
         images: [],
         pending: false,
       };
@@ -127,6 +138,12 @@ export function transition(
     case 'submit': {
       if (state.mode !== 'edit' && state.mode !== 'create') return state;
       if (state.pending) return state;
+      // A task must end up with a project: submission is blocked until one is
+      // chosen (same rule for create and for editing an unclassified task).
+      if (!state.fields.projectId.trim()) {
+        return { ...state, pending: false, error: 'Project is required.' };
+      }
+
       return { ...state, pending: true, error: undefined };
     }
 

@@ -10,6 +10,8 @@ export class KanbrawlTask extends LitElement {
   @property({ type: Object }) task!: Task;
   @property({ type: Array }) allColumns: string[] = [];
   @property({ type: Boolean }) stale = false;
+  /** Resolved name of the task's project; absent for unclassified tasks. */
+  @property() projectName?: string;
 
   static styles = css`
     :host {
@@ -145,6 +147,24 @@ export class KanbrawlTask extends LitElement {
       overflow: hidden;
       text-overflow: ellipsis;
       max-width: 140px;
+    }
+
+    .task-project {
+      font-size: 11px;
+      color: var(--text-secondary);
+      background: var(--count-bg);
+      padding: 2px 8px;
+      border-radius: 10px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 140px;
+      flex-shrink: 0;
+    }
+
+    .task-project.is-unclassified {
+      color: var(--text-dimmed);
+      font-style: italic;
     }
 
     .task-actions {
@@ -348,6 +368,11 @@ export class KanbrawlTask extends LitElement {
               class="task-time"
               title=${this.formatFullTimestamp(this.task.updatedAt)}
               >${this.formatTime(this.task.updatedAt)}</span
+            >
+            <span
+              class="task-project ${this.projectName ? '' : 'is-unclassified'}"
+              title="Project"
+              >${this.projectName ?? 'no project'}</span
             >
             ${this.task.assignee
               ? html`<span class="task-assignee" title=${this.task.assignee}

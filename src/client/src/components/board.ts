@@ -1,6 +1,6 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
-import type { Task, Column } from '../../../shared/board.js';
+import type { Task, Column, Project } from '../../../shared/board.js';
 
 const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 
@@ -8,6 +8,7 @@ const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 export class KanbrawlBoard extends LitElement {
   @property({ type: Array }) columns: Column[] = [];
   @property({ type: Array }) tasks: Task[] = [];
+  @property({ type: Array }) projects: Project[] = [];
 
   // Touch drag state (non-reactive, internal coordination only)
   private _touchDragId: string | undefined;
@@ -290,6 +291,7 @@ export class KanbrawlBoard extends LitElement {
             <kanbrawl-column
               .name=${column.name}
               .tasks=${this.tasks.filter((t) => t.column === column.name)}
+              .projects=${this.projects}
               .allColumns=${columnNames}
               .sortBy=${column.sortBy}
               .sortOrder=${column.sortOrder}

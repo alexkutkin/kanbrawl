@@ -3,6 +3,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import {
   compareTasks,
   type Task,
+  type Project,
   type SortBy,
   type SortOrder,
 } from '../../../shared/board.js';
@@ -12,6 +13,7 @@ import './app-button.js';
 export class KanbrawlColumn extends LitElement {
   @property() name = '';
   @property({ type: Array }) tasks: Task[] = [];
+  @property({ type: Array }) projects: Project[] = [];
   @property({ type: Array }) allColumns: string[] = [];
   @property({ type: Object }) staleIds = new Set<string>();
   @property() sortBy: SortBy = 'created';
@@ -447,6 +449,9 @@ export class KanbrawlColumn extends LitElement {
                 (task) => html`
                   <kanbrawl-task
                     .task=${task}
+                    .projectName=${this.projects.find(
+                      (project) => project.id === task.projectId,
+                    )?.name}
                     .allColumns=${this.allColumns}
                     .stale=${this.staleIds.has(task.id)}
                   ></kanbrawl-task>
