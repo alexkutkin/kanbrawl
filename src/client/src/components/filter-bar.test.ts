@@ -36,13 +36,48 @@ describe('kanbrawl-filter-bar', () => {
     expect(bar).toBeInstanceOf(KanbrawlFilterBar);
     const buttons = chips(bar);
     expect(buttons.map((button) => button.textContent?.trim())).toEqual([
-      'Kanbrawl',
-      'Tooling',
+      'Kanbrawl (0)',
+      'Tooling (0)',
     ]);
     expect(
       buttons.every((button) => button.getAttribute('aria-pressed') === 'true'),
     ).toBe(true);
     expect(bar.shadowRoot!.textContent).not.toContain('hidden');
+  });
+
+  it('counts all project tasks and breaks count ties alphabetically', async () => {
+    const bar = await mount({ filter: { mode: 'selected', ids: ['p1'] } });
+    bar.projects = [
+      { ...PROJECTS[0], name: 'Zeta' },
+      { ...PROJECTS[1], name: 'Alpha' },
+      { id: 'p3', name: 'Empty', folder: '' },
+    ];
+    bar.tasks = [
+      { projectId: 'p1' },
+      { projectId: 'p2' },
+      { projectId: 'p2' },
+      {},
+    ];
+    await bar.updateComplete;
+    expect(chips(bar).map((button) => button.textContent?.trim())).toEqual([
+      'Alpha (2)',
+      'Zeta (1)',
+      'Empty (0)',
+    ]);
+    expect(chips(bar)[0].getAttribute('aria-pressed')).toBe('false');
+
+    bar.tasks = [{ projectId: 'p1' }, { projectId: 'p2' }];
+    await bar.updateComplete;
+    expect(chips(bar).map((button) => button.textContent?.trim())).toEqual([
+      'Alpha (1)',
+      'Zeta (1)',
+      'Empty (0)',
+    ]);
+    expect(bar.projects.map((project) => project.id)).toEqual([
+      'p1',
+      'p2',
+      'p3',
+    ]);
   });
 
   it('emits toggle-project with the project id and shows off chips', async () => {

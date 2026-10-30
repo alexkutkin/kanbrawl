@@ -2139,10 +2139,12 @@ export class KanbrawlApp extends LitElement {
               ? 'Choose a project…'
               : 'No projects yet — add one in board settings'}
           </option>
-          ${this.board.projects.map(
-            (project) =>
-              html`<option value=${project.id}>${project.name}</option>`,
-          )}
+          ${[...this.board.projects]
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map(
+              (project) =>
+                html`<option value=${project.id}>${project.name}</option>`,
+            )}
         </select>
         ${this.detailError
           ? html`<div class="form-error" role="alert">${this.detailError}</div>`
@@ -2750,6 +2752,7 @@ export class KanbrawlApp extends LitElement {
         : nothing}
       <kanbrawl-filter-bar
         .projects=${this.board.projects}
+        .tasks=${this.board.tasks}
         .filter=${this.taskFilter}
         .hiddenCount=${hiddenTaskCount(this.taskFilter, this.board.tasks)}
         .unclassifiedCount=${unclassifiedTaskCount(this.board.tasks)}

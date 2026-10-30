@@ -1,6 +1,6 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
-import type { Project } from '../../../shared/board.js';
+import type { Project, Task } from '../../../shared/board.js';
 import { type TaskFilter, filterSummary } from '../task-filter.js';
 
 /**
@@ -11,6 +11,7 @@ import { type TaskFilter, filterSummary } from '../task-filter.js';
 @customElement('kanbrawl-filter-bar')
 export class KanbrawlFilterBar extends LitElement {
   @property({ type: Array }) projects: Project[] = [];
+  @property({ type: Array }) tasks: Array<Pick<Task, 'projectId'>> = [];
   @property({ type: Object }) filter: TaskFilter = { mode: 'all' };
   @property({ type: Number }) hiddenCount = 0;
   @property({ type: Number }) unclassifiedCount = 0;
@@ -105,6 +106,22 @@ export class KanbrawlFilterBar extends LitElement {
   }
 
   override render() {
+    const taskCounts = new Map<string, number>();
+    for (const task of this.tasks) {
+      if (task.projectId !== undefined) {
+        taskCounts.set(
+          task.projectId,
+          (taskCounts.get(task.projectId) ?? 0) + 1,
+        );
+      }
+    }
+
+    const projects = this.projects
+      .map((project) => ({ project, count: taskCounts.get(project.id) ?? 0 }))
+      .sort(
+        (a, b) =>
+          b.count - a.count || a.project.name.localeCompare(b.project.name),
+      );
     const summary = filterSummary(
       this.filter,
       this.projects.map((project) => project.id),
@@ -122,8 +139,8 @@ export class KanbrawlFilterBar extends LitElement {
           Show all
         </button>
         <span class="chips">
-          ${this.projects.map(
-            (project) => html`
+          ${projects.map(
+            ({ project, count }) => html`
               <button
                 type="button"
                 class="chip ${this.chipPressed(project.id)
@@ -135,7 +152,7 @@ export class KanbrawlFilterBar extends LitElement {
                   this.emit('toggle-project', project.id);
                 }}
               >
-                ${project.name}
+                ${project.name} (${count})
               </button>
             `,
           )}
