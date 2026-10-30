@@ -732,6 +732,109 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
       expect(movedLegacy.column).toBe('Blocked');
       expect(movedLegacy.projectId).toBeUndefined();
     });
+
+    it('keeps legacy JSON imports in the unclassified pool', () => {
+      const legacyDirectory = mkdtempSync(
+        join(tmpdir(), 'kanbrawl-store-test-'),
+      );
+      writeLegacyJson(legacyDirectory, {
+        tasks: [
+          {
+            id: 'legacy-1',
+            title: 'Imported',
+            description: '',
+            column: 'Todo',
+            priority: 'P1',
+            assignee: '',
+            createdAt: '2025-01-01T00:00:00.000Z',
+            updatedAt: '2025-01-01T00:00:00.000Z',
+          },
+        ],
+      });
+
+      const imported = new BoardStore(join(legacyDirectory, 'kanbrawl.db'), {
+        watch: false,
+      });
+      try {
+        const task = imported.getTasks()[0];
+        expect(task.projectId).toBeUndefined();
+
+        // Editing an imported task must choose a project...
+        expectBoardError(() =>
+          imported.updateTask(task.id, { assignee: 'someone' }),
+        );
+
+        // ...and once it does, the task leaves the unclassified pool.
+        const project = imported.updateProjects([
+          { name: 'Imported work', folder: '' },
+        ]).projects[0];
+        const classified = imported.updateTask(task.id, {
+          projectId: project.id,
+        });
+        expect(classified.projectId).toBe(project.id);
+      } finally {
+        imported.dispose();
+        rmSync(legacyDirectory, { recursive: true, force: true });
+      }
+    });
+
+    it('resumes a classification backfill after a conflict and finishes at zero', () => {
+      const project = seedProject();
+      const tasks = ['One', 'Two', 'Three'].map((title) => {
+        const task = store.createTask({ title, projectId: project.id });
+        unclassify(task.id);
+        return task;
+      });
+
+      const unclassified = () =>
+        store.getTasks().filter((task) => task.projectId === undefined);
+      expect(unclassified().map((task) => task.title)).toEqual([
+        'One',
+        'Two',
+        'Three',
+      ]);
+
+      // First backfill pass classifies one task, then the run is interrupted.
+      store.updateTask(tasks[0].id, { projectId: project.id });
+      expect(unclassified()).toHaveLength(2);
+
+      // On resume, task Two was moved by somebody else in the meantime (a move
+      // is project-neutral and allowed on unclassified tasks): the stale write
+      // fails with CONFLICT, and the documented recovery re-reads the task and
+      // decides again instead of replaying the stale decision.
+      const stale = store.getTask(tasks[1].id)!;
+      store.moveTask(tasks[1].id, 'Blocked');
+      const conflict = expectBoardError(() =>
+        store.updateTask(tasks[1].id, {
+          projectId: project.id,
+          expectedUpdatedAt: stale.updatedAt,
+        }),
+      );
+      expect(conflict.code).toBe('CONFLICT');
+      expect(unclassified()).toHaveLength(2);
+
+      const reread = store.getTask(tasks[1].id)!;
+      store.updateTask(tasks[1].id, {
+        projectId: project.id,
+        expectedUpdatedAt: reread.updatedAt,
+      });
+      store.updateTask(tasks[2].id, { projectId: project.id });
+
+      // Migration complete: zero tasks without a project.
+      expect(unclassified()).toEqual([]);
+    });
+
+    it('still requires a project on create while unclassified tasks exist', () => {
+      const project = seedProject();
+      const legacy = store.createTask({
+        title: 'Legacy',
+        projectId: project.id,
+      });
+      unclassify(legacy.id);
+
+      const error = expectBoardError(() => store.createTask({ title: 'New' }));
+      expect(error.code).toBe('INVALID_PROJECT');
+    });
   });
 
   // --- createTask ---
