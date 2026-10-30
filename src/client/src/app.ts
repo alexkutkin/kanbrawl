@@ -262,7 +262,7 @@ function renderMarkdown(source: string): TemplateResult[] {
 @customElement('kanbrawl-app')
 export class KanbrawlApp extends LitElement {
   @state() private session: BoardSnapshots = {
-    board: { columns: [], tasks: [] },
+    board: { columns: [], projects: [], projectsRevision: 0, tasks: [] },
     connection: 'connecting',
   };
 

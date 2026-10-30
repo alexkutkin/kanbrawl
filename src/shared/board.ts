@@ -10,6 +10,12 @@ export type Column = {
   sortOrder: SortOrder;
 };
 
+export type Project = {
+  id: string;
+  name: string;
+  folder: string;
+};
+
 export type AttachmentMeta = {
   id: string;
   taskId: string;
@@ -36,6 +42,8 @@ export type Task = {
 
 export type Board = {
   columns: Column[];
+  projects: Project[];
+  projectsRevision: number;
   tasks: Task[];
   theme?: 'light' | 'dark';
 };
@@ -51,6 +59,7 @@ export type BoardEvent =
       attachments: AttachmentMeta[];
     }
   | { type: 'columns_updated'; columns: Column[] }
+  | { type: 'projects_updated'; projects: Project[]; revision: number }
   | { type: 'board_sync'; board: Board };
 
 export const LIMITS = {
@@ -149,6 +158,12 @@ export function applyBoardEvent(
 
     case 'columns_updated': {
       // Column renames and removals move tasks; only a full board has the result.
+      return { board, reload: true };
+    }
+
+    case 'projects_updated': {
+      // Same reload semantics as columns_updated: a full board carries the
+      // authoritative project list and its revision.
       return { board, reload: true };
     }
   }

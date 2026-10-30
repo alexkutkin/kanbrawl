@@ -58,7 +58,13 @@ export class BoardTreeProvider
   readonly dropMimeTypes: readonly string[] = [TREE_MIME];
 
   // State
-  private board: Board = { columns: [], tasks: [] };
+  private board: Board = {
+    columns: [],
+    projects: [],
+    projectsRevision: 0,
+    tasks: [],
+  };
+
   private readonly priorityIcons: Record<Priority, vscode.Uri>;
   private api: KanbrawlApiClient | undefined;
 

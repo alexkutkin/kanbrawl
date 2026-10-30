@@ -50,7 +50,7 @@ export type BoardSessionOptions = {
 
 export class BoardSession {
   private snapshot: BoardSnapshots = {
-    board: { columns: [], tasks: [] },
+    board: { columns: [], projects: [], projectsRevision: 0, tasks: [] },
     connection: 'connecting',
   };
 

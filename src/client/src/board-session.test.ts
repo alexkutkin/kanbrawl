@@ -53,7 +53,7 @@ const TODO: Column = {
 };
 
 function makeBoard(tasks: Task[] = []): Board {
-  return { columns: [TODO], tasks };
+  return { columns: [TODO], projects: [], projectsRevision: 0, tasks };
 }
 
 function makeTask(id: string, title = `Task ${id}`): Task {
