@@ -5,7 +5,7 @@ import express, {
   type Request,
   type Response,
 } from 'express';
-import { LIMITS, type Column } from '../shared/board.js';
+import { LIMITS, type Column, type Project } from '../shared/board.js';
 import { BoardError } from './errors.js';
 import type { BoardStore } from './store.js';
 
@@ -14,6 +14,8 @@ const STATUS_BY_CODE: Record<string, number> = {
   COLUMN_NOT_FOUND: 404,
   ATTACHMENT_NOT_FOUND: 404,
   DUPLICATE_COLUMN: 409,
+  DUPLICATE_PROJECT: 409,
+  PROJECT_NOT_EMPTY: 409,
   CONFLICT: 409,
   ATTACHMENT_LIMIT: 409,
   ATTACHMENT_TOO_LARGE: 413,
@@ -139,6 +141,30 @@ export function createApiRouter(store: BoardStore): Router {
 
       const updated = store.updateColumns(columns, moveTo);
       res.json({ columns: updated });
+    } catch (error) {
+      sendError(res, error);
+    }
+  });
+
+  // Replace the full project list. The call is atomic: a rejected project
+  // rolls back the whole change. Omit expectedRevision for last-write-wins;
+  // with it a stale write fails with CONFLICT. The revision increments on
+  // every accepted change regardless of writer.
+  router.put('/projects', (request, res) => {
+    try {
+      const { projects, expectedRevision } = request.body as {
+        projects?: Array<Partial<Project>>;
+        expectedRevision?: number;
+      };
+      if (!projects || !Array.isArray(projects)) {
+        res.status(400).json({
+          error: 'projects must be an array',
+          code: 'INVALID_PROJECTS',
+        });
+        return;
+      }
+
+      res.json(store.updateProjects(projects, expectedRevision));
     } catch (error) {
       sendError(res, error);
     }

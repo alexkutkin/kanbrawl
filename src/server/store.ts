@@ -12,58 +12,17 @@ import {
   type BoardEvent,
   type Column,
   type Priority,
+  type Project,
   type SortBy,
   type SortOrder,
   type Task,
 } from '../shared/board.js';
 import { BoardError } from './errors.js';
 import { detectImageType, sanitizeFilename, type ImageType } from './images.js';
+import { migrate } from './migrations.js';
 
 const SORT_FIELDS = new Set<SortBy>(['priority', 'created', 'updated']);
 const PRIORITIES = new Set<Priority>(['P0', 'P1', 'P2']);
-
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS meta (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS columns (
-  position INTEGER PRIMARY KEY,
-  id TEXT NOT NULL UNIQUE,
-  name TEXT NOT NULL UNIQUE,
-  sort_by TEXT NOT NULL,
-  sort_order TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS tasks (
-  id TEXT PRIMARY KEY,
-  title TEXT NOT NULL,
-  description TEXT NOT NULL,
-  column_name TEXT NOT NULL,
-  priority TEXT NOT NULL,
-  assignee TEXT NOT NULL,
-  last_actor TEXT NOT NULL,
-  client_request_id TEXT UNIQUE,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS tasks_column_idx ON tasks(column_name);
-CREATE TABLE IF NOT EXISTS blobs (
-  sha256 TEXT PRIMARY KEY,
-  mime_type TEXT NOT NULL,
-  size INTEGER NOT NULL,
-  data BLOB NOT NULL,
-  created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS attachments (
-  id TEXT PRIMARY KEY,
-  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-  sha256 TEXT NOT NULL REFERENCES blobs(sha256),
-  filename TEXT NOT NULL,
-  position INTEGER NOT NULL,
-  created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
-`;
 
 type ColumnRow = {
   position: number;
@@ -71,6 +30,13 @@ type ColumnRow = {
   name: string;
   sort_by: SortBy;
   sort_order: SortOrder;
+};
+
+type ProjectRow = {
+  position: number;
+  id: string;
+  name: string;
+  folder: string;
 };
 
 type TaskRow = {
@@ -347,6 +313,14 @@ function toColumn(row: ColumnRow): Column {
   };
 }
 
+function toProject(row: ProjectRow): Project {
+  return {
+    id: row.id,
+    name: row.name,
+    folder: row.folder,
+  };
+}
+
 function toAttachment(row: AttachmentRow): AttachmentMeta {
   return {
     id: row.id,
@@ -442,6 +416,10 @@ export class BoardStore {
   private readonly countColumns: StatementSync;
   private readonly insertColumn: StatementSync;
   private readonly deleteColumns: StatementSync;
+  private readonly selectProjects: StatementSync;
+  private readonly insertProject: StatementSync;
+  private readonly deleteProjects: StatementSync;
+  private readonly countTasksByProject: StatementSync;
   private readonly insertTask: StatementSync;
   private readonly updateTaskRow: StatementSync;
   private readonly updateTaskColumn: StatementSync;
@@ -458,14 +436,19 @@ export class BoardStore {
     this.legacyPath = legacyJsonPath(filePath);
     this.database = new DatabaseSync(filePath);
 
-    this.database.exec(`
-      PRAGMA journal_mode = WAL;
-      PRAGMA synchronous = NORMAL;
-      PRAGMA foreign_keys = ON;
-      PRAGMA busy_timeout = 5000;
-      PRAGMA auto_vacuum = INCREMENTAL;
-    `);
-    this.database.exec(SCHEMA);
+    try {
+      this.database.exec(`
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = NORMAL;
+        PRAGMA foreign_keys = ON;
+        PRAGMA busy_timeout = 5000;
+        PRAGMA auto_vacuum = INCREMENTAL;
+      `);
+      migrate(this.database);
+    } catch (error) {
+      this.database.close();
+      throw error;
+    }
 
     this.selectColumns = this.database.prepare(
       'SELECT * FROM columns ORDER BY position',
@@ -515,6 +498,17 @@ export class BoardStore {
        VALUES (?, ?, ?, ?, ?)`,
     );
     this.deleteColumns = this.database.prepare('DELETE FROM columns');
+    this.selectProjects = this.database.prepare(
+      'SELECT * FROM projects ORDER BY position',
+    );
+    this.insertProject = this.database.prepare(
+      `INSERT INTO projects (position, id, name, folder)
+       VALUES (?, ?, ?, ?)`,
+    );
+    this.deleteProjects = this.database.prepare('DELETE FROM projects');
+    this.countTasksByProject = this.database.prepare(
+      'SELECT COUNT(*) AS count FROM tasks WHERE project_id = ?',
+    );
     this.insertTask = this.database.prepare(
       `INSERT INTO tasks (
         id, title, description, column_name, priority, assignee,
@@ -712,6 +706,20 @@ export class BoardStore {
     );
   }
 
+  private readProjects(): Project[] {
+    return (this.selectProjects.all() as unknown as ProjectRow[]).map((row) =>
+      toProject(row),
+    );
+  }
+
+  private readProjectsRevision(): number {
+    const row = this.selectMeta.get('projects_revision') as
+      | { value: string }
+      | undefined;
+    const revision = Number(row?.value ?? 0);
+    return Number.isFinite(revision) ? revision : 0;
+  }
+
   private readAttachments(taskId?: string): AttachmentMeta[] {
     const rows = (taskId === undefined
       ? this.selectAttachments.all()
@@ -752,6 +760,8 @@ export class BoardStore {
           : undefined;
       return {
         columns: this.readColumns(),
+        projects: this.readProjects(),
+        projectsRevision: this.readProjectsRevision(),
         tasks: this.readTasks(),
         ...(theme ? { theme } : {}),
       };
@@ -828,12 +838,32 @@ export class BoardStore {
     }
   }
 
+  private writeProjects(projects: Project[]): void {
+    this.deleteProjects.run();
+    for (const [position, project] of projects.entries()) {
+      this.insertProject.run(
+        position,
+        project.id,
+        project.name,
+        project.folder,
+      );
+    }
+  }
+
   getBoard(): Board {
     return clone(this.readBoard());
   }
 
   getColumns(): Column[] {
     return clone(this.readTransaction(() => this.readColumns()));
+  }
+
+  getProjects(): Project[] {
+    return clone(this.readTransaction(() => this.readProjects()));
+  }
+
+  getProjectsRevision(): number {
+    return this.readTransaction(() => this.readProjectsRevision());
   }
 
   getColumnNames(): string[] {
@@ -1116,6 +1146,137 @@ export class BoardStore {
       this.writeColumns(next);
       events.push({ type: 'columns_updated', columns: clone(next) });
       return { result: clone(next), events };
+    });
+  }
+
+  /**
+   * Replaces the full project list in one atomic transaction: entries that
+   * match an existing project by id (or name) are kept, renamed and
+   * reordered, new entries are created, missing ones are deleted. Deleting a
+   * project that still holds tasks is rejected with PROJECT_NOT_EMPTY and
+   * rolls back the whole call. An optional expectedRevision rejects stale
+   * writes with CONFLICT; without it the write is last-write-wins. The
+   * revision increments on every accepted change regardless of writer.
+   */
+  updateProjects(
+    projects: Array<Partial<Project>>,
+    expectedRevision?: number,
+  ): { projects: Project[]; revision: number } {
+    return this.mutate(() => {
+      if (!Array.isArray(projects)) {
+        throw new BoardError('INVALID_PROJECTS', 'projects must be an array.');
+      }
+
+      const revision = this.readProjectsRevision();
+      if (expectedRevision !== undefined) {
+        if (!Number.isInteger(expectedRevision)) {
+          throw new BoardError(
+            'INVALID_PROJECTS',
+            'expectedRevision must be an integer.',
+          );
+        }
+
+        if (expectedRevision !== revision) {
+          throw new BoardError(
+            'CONFLICT',
+            'The project list was changed by someone else. Reload it and try again.',
+            {
+              currentRevision: revision,
+              projects: clone(this.readProjects()),
+            },
+          );
+        }
+      }
+
+      const requested = projects.map((item) => ({
+        ...item,
+        name: typeof item.name === 'string' ? item.name.trim() : '',
+      }));
+
+      if (requested.some((item) => item.name.length === 0)) {
+        throw new BoardError(
+          'INVALID_PROJECTS',
+          'Project names must not be empty.',
+        );
+      }
+
+      if (requested.some((item) => typeof item.folder !== 'string')) {
+        throw new BoardError(
+          'INVALID_PROJECTS',
+          'Project folders must be strings.',
+        );
+      }
+
+      const names = requested.map((item) => item.name);
+      if (new Set(names).size !== names.length) {
+        throw new BoardError(
+          'DUPLICATE_PROJECT',
+          'Project names must be unique.',
+        );
+      }
+
+      const currentProjects = this.readProjects();
+      const byId = new Map(
+        currentProjects.map((project) => [project.id, project]),
+      );
+      const byName = new Map(
+        currentProjects.map((project) => [project.name, project]),
+      );
+      const used = new Set<string>();
+      const next: Project[] = [];
+
+      for (const item of requested) {
+        let existing = item.id ? byId.get(item.id) : undefined;
+        if (existing && used.has(existing.id)) {
+          existing = undefined;
+        }
+
+        if (!existing) {
+          const candidate = byName.get(item.name);
+          if (candidate && !used.has(candidate.id)) {
+            existing = candidate;
+          }
+        }
+
+        const id = existing ? existing.id : uuidv4();
+        used.add(id);
+        next.push({ id, name: item.name, folder: item.folder! });
+      }
+
+      for (const project of currentProjects) {
+        if (used.has(project.id)) continue;
+        const taskCount = Number(
+          this.countTasksByProject.get(project.id)?.count ?? 0,
+        );
+        if (taskCount > 0) {
+          throw new BoardError(
+            'PROJECT_NOT_EMPTY',
+            `Project "${project.name}" still holds ${taskCount} ${
+              taskCount === 1 ? 'task' : 'tasks'
+            }.`,
+            { projectId: project.id, taskCount },
+          );
+        }
+      }
+
+      // The write replaces every row at once (it also reorders and renames),
+      // so referenced projects must not be seen as deleted mid-transaction;
+      // the check above keeps referenced projects in the final list.
+      this.database.exec('PRAGMA defer_foreign_keys = ON');
+      this.writeProjects(next);
+
+      const nextRevision = revision + 1;
+      this.upsertMeta.run('projects_revision', String(nextRevision));
+      return {
+        result: { projects: clone(next), revision: nextRevision },
+        events: [
+          {
+            type: 'projects_updated',
+            projects: clone(next),
+            revision: nextRevision,
+          },
+        ],
+      };
     });
   }
 

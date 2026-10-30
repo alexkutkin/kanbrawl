@@ -8,8 +8,15 @@ import {
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { LIMITS, type BoardEvent, type Column } from '../shared/board.js';
+import {
+  LIMITS,
+  type BoardEvent,
+  type Column,
+  type Project,
+} from '../shared/board.js';
+import { migrate } from './migrations.js';
 import { BoardStore } from './store.js';
 import { BoardError } from './errors.js';
 
@@ -59,6 +66,17 @@ function writeLegacyJson(dir: string, data: unknown): string {
     typeof data === 'string' ? data : JSON.stringify(data),
   );
   return filePath;
+}
+
+function expectBoardError(run: () => unknown): BoardError {
+  try {
+    run();
+  } catch (error) {
+    expect(error).toBeInstanceOf(BoardError);
+    return error as BoardError;
+  }
+
+  throw new Error('Expected the call to throw a BoardError.');
 }
 
 describe('BoardStore', () => {
@@ -233,6 +251,265 @@ describe('BoardStore', () => {
       ).toThrow(BoardError);
       expect(existsSync(join(legacyDirectory, 'kanbrawl.json'))).toBe(true);
       rmSync(legacyDirectory, { recursive: true, force: true });
+    });
+  });
+
+  // --- Schema migration ---
+  describe('schema migration', () => {
+    // The schema as it shipped before projects and versioned migrations
+    // existed, kept as a literal so upgrades are tested against the real
+    // old shape.
+    const LEGACY_SCHEMA_V0 = `
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS columns (
+  position INTEGER PRIMARY KEY,
+  id TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL UNIQUE,
+  sort_by TEXT NOT NULL,
+  sort_order TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS tasks (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL,
+  column_name TEXT NOT NULL,
+  priority TEXT NOT NULL,
+  assignee TEXT NOT NULL,
+  last_actor TEXT NOT NULL,
+  client_request_id TEXT UNIQUE,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tasks_column_idx ON tasks(column_name);
+CREATE TABLE IF NOT EXISTS blobs (
+  sha256 TEXT PRIMARY KEY,
+  mime_type TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  data BLOB NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS attachments (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  sha256 TEXT NOT NULL REFERENCES blobs(sha256),
+  filename TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
+`;
+
+    function createLegacyDatabase(databasePath: string): void {
+      const database = new DatabaseSync(databasePath);
+      try {
+        database.exec(LEGACY_SCHEMA_V0);
+        database
+          .prepare(
+            `INSERT INTO columns (position, id, name, sort_by, sort_order)
+           VALUES (?, ?, ?, ?, ?)`,
+          )
+          .run(0, 'col-1', 'Todo', 'priority', 'asc');
+        const insertTask = database.prepare(
+          `INSERT INTO tasks (
+             id, title, description, column_name, priority, assignee,
+             last_actor, client_request_id, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        );
+        insertTask.run(
+          'task-1',
+          'Legacy one',
+          'kept',
+          'Todo',
+          'P1',
+          'ada',
+          'ada',
+          null,
+          '2025-01-01T00:00:00.000Z',
+          '2025-01-01T00:00:00.000Z',
+        );
+        insertTask.run(
+          'task-2',
+          'Legacy two',
+          '',
+          'Todo',
+          'P2',
+          '',
+          'grace',
+          null,
+          '2025-01-02T00:00:00.000Z',
+          '2025-01-02T00:00:00.000Z',
+        );
+        database
+          .prepare(`INSERT INTO meta (key, value) VALUES ('theme', 'light')`)
+          .run();
+      } finally {
+        database.close();
+      }
+    }
+
+    // The snapshot compares the effective schema shape (columns per table,
+    // index names, schema version), not the stored SQL text, which differs
+    // between a freshly created and an upgraded database.
+    function schemaSnapshot(databasePath: string) {
+      const database = new DatabaseSync(databasePath);
+      try {
+        const userVersion = (
+          database.prepare('PRAGMA user_version').get() as {
+            user_version: number;
+          }
+        ).user_version;
+        const tables = (
+          [
+            'attachments',
+            'blobs',
+            'columns',
+            'meta',
+            'projects',
+            'tasks',
+          ] as const
+        ).map((name) => [
+          name,
+          database.prepare(`PRAGMA table_info(${name})`).all(),
+        ]);
+        const indexes = (
+          database
+            .prepare(
+              `SELECT name FROM sqlite_master
+               WHERE type = 'index' AND name NOT LIKE 'sqlite_%'
+               ORDER BY name`,
+            )
+            .all() as Array<{ name: string }>
+        ).map((row) => row.name);
+        return { userVersion, tables, indexes };
+      } finally {
+        database.close();
+      }
+    }
+
+    function withTemporaryDatabase<T>(run: (databasePath: string) => T): T {
+      const dir = mkdtempSync(join(tmpdir(), 'kanbrawl-migration-test-'));
+      try {
+        return run(join(dir, 'kanbrawl.db'));
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    function columnNames(
+      snapshot: ReturnType<typeof schemaSnapshot>,
+      table: string,
+    ): string[] {
+      const entry = snapshot.tables.find(([name]) => name === table);
+      return entry
+        ? (entry[1] as Array<{ name: string }>).map((column) => column.name)
+        : [];
+    }
+
+    it('initializes a fresh database to the current schema version', () => {
+      withTemporaryDatabase((databasePath) => {
+        new BoardStore(databasePath, { watch: false }).dispose();
+        const snapshot = schemaSnapshot(databasePath);
+        expect(snapshot.userVersion).toBe(1);
+        expect(columnNames(snapshot, 'projects')).toEqual([
+          'id',
+          'position',
+          'name',
+          'folder',
+        ]);
+        expect(columnNames(snapshot, 'tasks')).toContain('project_id');
+        expect(snapshot.indexes).toContain('tasks_project_idx');
+      });
+    });
+
+    it('upgrades a pre-projects database in place and keeps its data', () => {
+      withTemporaryDatabase((databasePath) => {
+        createLegacyDatabase(databasePath);
+        const upgraded = new BoardStore(databasePath, { watch: false });
+        try {
+          expect(upgraded.getColumnNames()).toEqual(['Todo']);
+          const tasks = upgraded.getTasks();
+          expect(tasks.map((task) => task.title)).toEqual([
+            'Legacy one',
+            'Legacy two',
+          ]);
+          expect(tasks[0].description).toBe('kept');
+          expect(upgraded.getBoard().theme).toBe('light');
+        } finally {
+          upgraded.dispose();
+        }
+
+        const snapshot = schemaSnapshot(databasePath);
+        expect(snapshot.userVersion).toBe(1);
+        expect(columnNames(snapshot, 'projects')).toEqual([
+          'id',
+          'position',
+          'name',
+          'folder',
+        ]);
+        expect(columnNames(snapshot, 'tasks')).toContain('project_id');
+        expect(snapshot.indexes).toContain('tasks_project_idx');
+      });
+    });
+
+    it('is safe to re-run on an already migrated database', () => {
+      withTemporaryDatabase((databasePath) => {
+        createLegacyDatabase(databasePath);
+        new BoardStore(databasePath, { watch: false }).dispose();
+        const before = schemaSnapshot(databasePath);
+        const database = new DatabaseSync(databasePath);
+        try {
+          migrate(database);
+          migrate(database);
+        } finally {
+          database.close();
+        }
+
+        expect(schemaSnapshot(databasePath)).toEqual(before);
+      });
+    });
+
+    it('ends in the same schema state whether fresh or upgraded', () => {
+      withTemporaryDatabase((legacyPath) => {
+        createLegacyDatabase(legacyPath);
+        new BoardStore(legacyPath, { watch: false }).dispose();
+        withTemporaryDatabase((freshPath) => {
+          new BoardStore(freshPath, { watch: false }).dispose();
+          expect(schemaSnapshot(freshPath)).toEqual(schemaSnapshot(legacyPath));
+        });
+      });
+    });
+
+    it('backs project deletion with a database-level foreign key', () => {
+      withTemporaryDatabase((databasePath) => {
+        createLegacyDatabase(databasePath);
+        new BoardStore(databasePath, { watch: false }).dispose();
+        const database = new DatabaseSync(databasePath);
+        try {
+          database.exec('PRAGMA foreign_keys = ON');
+          database
+            .prepare(
+              'INSERT INTO projects (position, id, name, folder) VALUES (?, ?, ?, ?)',
+            )
+            .run(0, 'proj-1', 'Kanbrawl', '/code/kanbrawl');
+          database
+            .prepare('UPDATE tasks SET project_id = ? WHERE id = ?')
+            .run('proj-1', 'task-1');
+          expect(() =>
+            database.prepare('DELETE FROM projects WHERE id = ?').run('proj-1'),
+          ).toThrow();
+          database
+            .prepare('UPDATE tasks SET project_id = NULL WHERE id = ?')
+            .run('task-1');
+          expect(() =>
+            database.prepare('DELETE FROM projects WHERE id = ?').run('proj-1'),
+          ).not.toThrow();
+        } finally {
+          database.close();
+        }
+      });
     });
   });
 
@@ -566,6 +843,254 @@ describe('BoardStore', () => {
       expect(
         readBoard(databasePath).columns.map((column) => column.name),
       ).toEqual(['Alpha', 'Beta']);
+    });
+  });
+
+  // --- updateProjects ---
+  describe('updateProjects', () => {
+    function createCatalog() {
+      const first = store.updateProjects([
+        { name: 'Kanbrawl', folder: '/code/kanbrawl' },
+        { name: 'Ops', folder: '/code/ops' },
+      ]);
+      return {
+        first: first.projects[0],
+        second: first.projects[1],
+        revision: first.revision,
+      };
+    }
+
+    it('creates projects with server-assigned ids and exposes them', () => {
+      const { projects, revision } = store.updateProjects([
+        { name: 'Kanbrawl', folder: '/code/kanbrawl' },
+        { name: 'Ops', folder: '/code/ops' },
+      ]);
+
+      expect(projects.map((project) => project.name)).toEqual([
+        'Kanbrawl',
+        'Ops',
+      ]);
+      expect(projects.map((project) => project.folder)).toEqual([
+        '/code/kanbrawl',
+        '/code/ops',
+      ]);
+      expect(projects.every((project) => Boolean(project.id))).toBe(true);
+      expect(new Set(projects.map((project) => project.id)).size).toBe(2);
+      expect(revision).toBe(1);
+
+      expect(store.getProjects()).toEqual(projects);
+      const board = store.getBoard();
+      expect(board.projects).toEqual(projects);
+      expect(board.projectsRevision).toBe(1);
+    });
+
+    it('renames, reorders and edits folders by id', () => {
+      const { first, second } = createCatalog();
+      const { projects, revision } = store.updateProjects([
+        { id: second.id, name: 'Runbook', folder: '/code/runbook' },
+        { id: first.id, name: 'Kanbrawl', folder: '/code/kanbrawl' },
+      ]);
+
+      expect(projects.map((project) => project.name)).toEqual([
+        'Runbook',
+        'Kanbrawl',
+      ]);
+      expect(projects.map((project) => project.id)).toEqual([
+        second.id,
+        first.id,
+      ]);
+      expect(projects[0].folder).toBe('/code/runbook');
+      expect(revision).toBe(2);
+    });
+
+    it('keeps ids when matching by name and mints ids for new entries', () => {
+      const { first } = createCatalog();
+      const { projects } = store.updateProjects([
+        { name: 'Kanbrawl', folder: '/code/kanbrawl' },
+        { name: 'Fresh', folder: '/code/fresh' },
+      ]);
+
+      expect(projects.map((project) => project.name)).toEqual([
+        'Kanbrawl',
+        'Fresh',
+      ]);
+      expect(projects[0].id).toBe(first.id);
+      expect(projects[1].id).not.toBe(first.id);
+    });
+
+    it('deletes projects missing from the list and allows an empty catalog', () => {
+      const { first, revision } = createCatalog();
+      const dropped = store.updateProjects([
+        { id: first.id, name: 'Kanbrawl', folder: '/code/kanbrawl' },
+      ]);
+      expect(dropped.projects.map((project) => project.name)).toEqual([
+        'Kanbrawl',
+      ]);
+      expect(dropped.revision).toBe(revision + 1);
+
+      const cleared = store.updateProjects([]);
+      expect(cleared.projects).toEqual([]);
+      expect(cleared.revision).toBe(revision + 2);
+      expect(store.getProjects()).toEqual([]);
+    });
+
+    it('stores the folder exactly as given', () => {
+      const folder = String.raw`  C:\Repos\personal\My Project\src/../ `;
+      const { projects } = store.updateProjects([{ name: 'Windowsy', folder }]);
+      expect(projects[0].folder).toBe(folder);
+      expect(readBoard(databasePath).projects[0].folder).toBe(folder);
+    });
+
+    it('rejects duplicate names with DUPLICATE_PROJECT', () => {
+      createCatalog();
+      const error = expectBoardError(() =>
+        store.updateProjects([
+          { name: 'Kanbrawl', folder: '/a' },
+          { name: 'Kanbrawl ', folder: '/b' },
+        ]),
+      );
+      expect(error.code).toBe('DUPLICATE_PROJECT');
+      expect(store.getProjects().map((project) => project.name)).toEqual([
+        'Kanbrawl',
+        'Ops',
+      ]);
+      expect(store.getBoard().projectsRevision).toBe(1);
+    });
+
+    it('rejects malformed items with INVALID_PROJECTS', () => {
+      const callUpdate = (projects: unknown) =>
+        store.updateProjects(projects as Array<Partial<Project>>);
+      const invalid: unknown[] = [
+        [{ name: '   ', folder: '/a' }],
+        [{ folder: '/a' }],
+        [{ name: 'No folder' }],
+        [{ name: 'Bad folder', folder: 42 }],
+      ];
+      const errors = invalid.map((projects) =>
+        expectBoardError(() => callUpdate(projects)),
+      );
+      for (const error of errors) {
+        expect(error.code).toBe('INVALID_PROJECTS');
+      }
+
+      expect(store.getProjects()).toEqual([]);
+      expect(store.getBoard().projectsRevision).toBe(0);
+    });
+
+    it('rolls back the whole change when one item is rejected', () => {
+      const { first, second } = createCatalog();
+      const error = expectBoardError(() =>
+        store.updateProjects([
+          { id: first.id, name: 'Renamed', folder: '/new' },
+          { id: second.id, name: 'Renamed', folder: '/new' },
+        ]),
+      );
+      expect(error.code).toBe('DUPLICATE_PROJECT');
+
+      expect(store.getProjects().map((project) => project.name)).toEqual([
+        'Kanbrawl',
+        'Ops',
+      ]);
+      expect(store.getBoard().projectsRevision).toBe(1);
+    });
+
+    it('increments the revision on every accepted change', () => {
+      const first = store.updateProjects([{ name: 'Only', folder: '' }]);
+      expect(first.revision).toBe(1);
+      const second = store.updateProjects([{ name: 'Only', folder: '' }]);
+      expect(second.revision).toBe(2);
+    });
+
+    it('rejects a stale expectedRevision with CONFLICT', () => {
+      const { first, revision } = createCatalog();
+      const error = expectBoardError(() =>
+        store.updateProjects(
+          [{ id: first.id, name: 'Kanbrawl', folder: '/code/kanbrawl' }],
+          revision - 1,
+        ),
+      );
+      expect(error.code).toBe('CONFLICT');
+      expect(error.details?.currentRevision).toBe(revision);
+      expect(Array.isArray(error.details?.projects)).toBe(true);
+
+      expect(store.getBoard().projectsRevision).toBe(revision);
+    });
+
+    it('accepts a matching expectedRevision and last-write-wins without one', () => {
+      const { first, revision } = createCatalog();
+      const guarded = store.updateProjects(
+        [{ id: first.id, name: 'Guarded', folder: '' }],
+        revision,
+      );
+      expect(guarded.revision).toBe(revision + 1);
+
+      const unguarded = store.updateProjects([
+        { name: 'Unguarded', folder: '' },
+      ]);
+      expect(unguarded.projects.map((project) => project.name)).toEqual([
+        'Unguarded',
+      ]);
+      expect(unguarded.revision).toBe(revision + 2);
+    });
+
+    it('rejects a non-numeric expectedRevision with INVALID_PROJECTS', () => {
+      createCatalog();
+      const error = expectBoardError(() =>
+        store.updateProjects([], 'stale' as unknown as number),
+      );
+      expect(error.code).toBe('INVALID_PROJECTS');
+    });
+
+    it('emits projects_updated with the new list and revision', () => {
+      const events: BoardEvent[] = [];
+      store.onChange((event) => events.push(event));
+      const { projects, revision } = store.updateProjects([
+        { name: 'Emitted', folder: '/emitted' },
+      ]);
+
+      expect(events).toEqual([
+        { type: 'projects_updated', projects, revision },
+      ]);
+    });
+
+    it('persists the catalog and its revision across reopen', () => {
+      const { projects, revision } = store.updateProjects([
+        { name: 'Persisted', folder: '/persisted' },
+      ]);
+      const reopened = readBoard(databasePath);
+      expect(reopened.projects).toEqual(projects);
+      expect(reopened.projectsRevision).toBe(revision);
+    });
+
+    it('refuses to delete a project that still holds tasks', () => {
+      const { projects, revision } = store.updateProjects([
+        { name: 'Holds tasks', folder: '' },
+      ]);
+      const project = projects[0];
+      const task = store.createTask({ title: 'Referencing task' });
+      const database = new DatabaseSync(databasePath);
+      try {
+        database
+          .prepare('UPDATE tasks SET project_id = ? WHERE id = ?')
+          .run(project.id, task.id);
+      } finally {
+        database.close();
+      }
+
+      const error = expectBoardError(() =>
+        store.updateProjects([{ name: 'New project', folder: '' }]),
+      );
+      expect(error.code).toBe('PROJECT_NOT_EMPTY');
+      expect(error.details).toEqual({
+        projectId: project.id,
+        taskCount: 1,
+      });
+
+      // The rejected delete rolls back the addition too.
+      expect(store.getProjects().map((item) => item.name)).toEqual([
+        'Holds tasks',
+      ]);
+      expect(store.getBoard().projectsRevision).toBe(revision);
     });
   });
 

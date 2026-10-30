@@ -4,6 +4,7 @@ import type {
   Board,
   BoardEvent,
   Column,
+  Project,
   Task,
 } from '../../shared/board.js';
 import { ApiError } from './api.js';
@@ -53,7 +54,7 @@ const TODO: Column = {
 };
 
 function makeBoard(tasks: Task[] = []): Board {
-  return { columns: [TODO], tasks };
+  return { columns: [TODO], projects: [], projectsRevision: 0, tasks };
 }
 
 function makeTask(id: string, title = `Task ${id}`): Task {
@@ -98,6 +99,10 @@ function makeCommands(board = makeBoard()) {
     ),
     deleteTask: vi.fn(async () => undefined),
     updateColumns: vi.fn(async (columns: Column[]) => ({ columns })),
+    updateProjects: vi.fn(async (projects: Project[]) => ({
+      projects,
+      revision: 1,
+    })),
     addAttachment: vi.fn(async (taskId: string) =>
       makeAttachment('img-1', taskId),
     ),

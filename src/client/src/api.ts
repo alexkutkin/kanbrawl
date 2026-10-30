@@ -2,6 +2,7 @@ import type {
   AttachmentMeta,
   Board,
   Column,
+  Project,
   Task,
 } from '../../shared/board.js';
 
@@ -19,11 +20,18 @@ function headers(json: boolean): Record<string, string> {
   return result;
 }
 
+export type ApiErrorDetails = {
+  availableColumns?: string[];
+  current?: Task;
+  currentRevision?: number;
+  projects?: Project[];
+};
+
 export class ApiError extends Error {
   constructor(
     message: string,
     readonly code?: string,
-    readonly details?: { availableColumns?: string[]; current?: Task },
+    readonly details?: ApiErrorDetails,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -45,7 +53,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       | {
           error?: string;
           code?: string;
-          details?: { availableColumns?: string[]; current?: Task };
+          details?: ApiErrorDetails;
         }
       | undefined;
     try {
@@ -121,6 +129,23 @@ export async function updateColumns(
     method: 'PUT',
     headers: headers(true),
     body: JSON.stringify({ columns, moveTo }),
+  });
+}
+
+export type ProjectInput = {
+  id?: string;
+  name: string;
+  folder: string;
+};
+
+export async function updateProjects(
+  projects: ProjectInput[],
+  expectedRevision?: number,
+): Promise<{ projects: Project[]; revision: number }> {
+  return request<{ projects: Project[]; revision: number }>('/api/projects', {
+    method: 'PUT',
+    headers: headers(true),
+    body: JSON.stringify({ projects, expectedRevision }),
   });
 }
 

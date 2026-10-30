@@ -151,10 +151,17 @@ auto-created on first run:
 
 - **Columns** — identities, names, order and sorting (`priority`, `created` or
   `updated`); defaults to Todo, In progress, Blocked, Done
+- **Projects** — the managed project catalog: unique names with free-form
+  folder paths, stored as plain metadata and never validated against the
+  filesystem
 - **Theme** — optional `light`/`dark` UI theme override
 - **Tasks** — tasks with their history metadata
 - **Attachments** — images (PNG, JPEG, GIF or WebP, up to 10 MB and 10 per
   task), stored content-addressed by SHA-256
+
+Schema changes are applied through versioned migrations tracked in
+`PRAGMA user_version`; upgrading an existing database in place is safe and the
+migration is idempotent, so re-running it is a no-op.
 
 If a legacy `kanbrawl.json` sits next to the database, it is imported once on
 startup and renamed to `kanbrawl.json.imported`.
@@ -169,17 +176,25 @@ All tools are available via the `/mcp` endpoint.
 | Tool | Description | Read-only |
 |------|-------------|-----------|
 | `get_columns` | Get columns with task counts | ✅ |
+| `get_projects` | Get the project catalog with its revision | ✅ |
 | `get_task` | Get one task by id | ✅ |
 | `list_tasks` | List tasks across all columns, with `total`, `hasMore` and `offset` | ✅ |
 | `create_task` | Create a new task (with priority, assignee, `clientRequestId`) | ❌ |
 | `move_task` | Move a task to a different column | ❌ |
 | `update_task` | Update task fields (title, description, column, priority, assignee) | ❌ |
 | `delete_task` | Delete a task | ❌ |
+| `update_projects` | Replace the full project list (rename, reorder, add, delete) | ❌ |
 | `attach_image` | Attach an image to a task (file `path` preferred, base64 `data` fallback) | ❌ |
 | `get_attachment` | Get an attachment's metadata plus its image bytes | ✅ |
 | `delete_attachment` | Remove an image from a task | ❌ |
 
 Mutations accept `actor` so the board can show who last changed a task. Pass `expectedUpdatedAt` (or `expectedVersion` on `move_task`) to turn a lost update into a `CONFLICT` error instead of silently overwriting another agent's change.
+
+`update_projects` and `PUT /api/projects` replace the whole project list in one
+atomic change; a rejected project rolls back the entire call. Pass
+`expectedRevision` to turn a stale write into a `CONFLICT` error; without it
+the write is last-write-wins and can overwrite concurrent changes. The
+revision increments on every accepted change regardless of writer.
 
 ## Architecture
 

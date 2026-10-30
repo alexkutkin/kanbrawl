@@ -5,6 +5,7 @@ import {
   type AttachmentMeta,
   type Board,
   type Priority,
+  type Project,
   type Task,
   type Column,
 } from '../../shared/board.js';
@@ -14,6 +15,7 @@ import {
   updateTask,
   deleteTask,
   updateColumns,
+  updateProjects,
   addAttachment,
   deleteAttachment,
   attachmentUrl,
@@ -61,6 +63,11 @@ type UpdateColumnsDetail = {
   moveTo?: string;
 } & ResultCallbacks;
 
+type UpdateProjectsDetail = {
+  projects: Project[];
+  expectedRevision?: number;
+} & ResultCallbacks;
+
 type ErrorState = { message: string; retry?: () => void };
 
 const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
@@ -79,6 +86,7 @@ const apiCommands: BoardCommands = {
   updateTask,
   deleteTask,
   updateColumns,
+  updateProjects,
   addAttachment,
   deleteAttachment: async (_taskId, attachmentId) =>
     deleteAttachment(attachmentId),
@@ -262,7 +270,7 @@ function renderMarkdown(source: string): TemplateResult[] {
 @customElement('kanbrawl-app')
 export class KanbrawlApp extends LitElement {
   @state() private session: BoardSnapshots = {
-    board: { columns: [], tasks: [] },
+    board: { columns: [], projects: [], projectsRevision: 0, tasks: [] },
     connection: 'connecting',
   };
 
@@ -1905,6 +1913,17 @@ export class KanbrawlApp extends LitElement {
     }
   }
 
+  private async handleUpdateProjects(e: CustomEvent<UpdateProjectsDetail>) {
+    const { projects, expectedRevision, resolve, reject } = e.detail;
+    try {
+      await this.boardSession.updateProjects(projects, expectedRevision);
+      resolve?.();
+      this.clearError();
+    } catch (error) {
+      reject?.(this.message(error));
+    }
+  }
+
   // --- Rendering ---
 
   private get connectionLabel(): string {
@@ -2513,8 +2532,11 @@ export class KanbrawlApp extends LitElement {
         <div class="header-controls">
           <kanbrawl-column-settings
             .columns=${this.board.columns}
+            .projects=${this.board.projects}
+            .projectsRevision=${this.board.projectsRevision}
             .tasks=${this.board.tasks}
             @update-columns=${this.handleUpdateColumns}
+            @update-projects=${this.handleUpdateProjects}
           ></kanbrawl-column-settings>
           <kanbrawl-button
             class="theme-toggle"

@@ -9,6 +9,7 @@ const EVENT_TYPES = [
   'task_moved',
   'task_deleted',
   'columns_updated',
+  'projects_updated',
 ] as const;
 
 export class EventSourceTransport implements BoardTransport {

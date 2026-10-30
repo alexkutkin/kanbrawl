@@ -29,6 +29,8 @@ function makeBoard(tasks: Task[] = []): Board {
       { id: 'c1', name: 'Todo', sortBy: 'priority', sortOrder: 'asc' },
       { id: 'c2', name: 'Done', sortBy: 'updated', sortOrder: 'desc' },
     ],
+    projects: [],
+    projectsRevision: 0,
     tasks,
   };
 }
@@ -166,6 +168,17 @@ describe('applyBoardEvent', () => {
     const result = applyBoardEvent(board, {
       type: 'columns_updated',
       columns: board.columns,
+    });
+    expect(result.board).toBe(board);
+    expect(result.reload).toBe(true);
+  });
+
+  it('asks for a reload when projects change', () => {
+    const board = makeBoard();
+    const result = applyBoardEvent(board, {
+      type: 'projects_updated',
+      projects: [{ id: 'p1', name: 'Kanbrawl', folder: '/code/kanbrawl' }],
+      revision: 3,
     });
     expect(result.board).toBe(board);
     expect(result.reload).toBe(true);
