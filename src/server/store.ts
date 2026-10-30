@@ -440,6 +440,10 @@ export class BoardStore {
   constructor(databasePath?: string, options: BoardStoreOptions = {}) {
     const filePath = databasePath ?? resolve(process.cwd(), 'kanbrawl.db');
     this.legacyPath = legacyJsonPath(filePath);
+    // A pre-existing file is backed up before its schema is migrated; a
+    // freshly created one has nothing worth preserving.
+    const upgradeTarget =
+      filePath !== ':memory:' && existsSync(filePath) ? filePath : undefined;
     this.database = new DatabaseSync(filePath);
 
     try {
@@ -450,7 +454,7 @@ export class BoardStore {
         PRAGMA busy_timeout = 5000;
         PRAGMA auto_vacuum = INCREMENTAL;
       `);
-      migrate(this.database);
+      migrate(this.database, upgradeTarget);
     } catch (error) {
       this.database.close();
       throw error;
@@ -1247,10 +1251,19 @@ export class BoardStore {
         }
       }
 
-      const requested = projects.map((item) => ({
-        ...item,
-        name: typeof item.name === 'string' ? item.name.trim() : '',
-      }));
+      const requested = projects.map((item, index) => {
+        if (item === null || typeof item !== 'object') {
+          throw new BoardError(
+            'INVALID_PROJECTS',
+            `projects[${index}] must be an object.`,
+          );
+        }
+
+        return {
+          ...item,
+          name: typeof item.name === 'string' ? item.name.trim() : '',
+        };
+      });
 
       if (requested.some((item) => item.name.length === 0)) {
         throw new BoardError(
@@ -1281,21 +1294,56 @@ export class BoardStore {
       const byName = new Map(
         currentProjects.map((project) => [project.name, project]),
       );
+
+      // A passed id is authoritative: it must be a string, exist in the
+      // catalog and appear only once in the request. Creating a project means
+      // omitting the id (the UI drops its draft ids here). Unknown ids fail
+      // loudly instead of silently minting a replacement project.
+      const requestedIds: string[] = [];
+      for (const item of requested) {
+        if (item.id === undefined) continue;
+        if (typeof item.id !== 'string') {
+          throw new BoardError(
+            'INVALID_PROJECTS',
+            'Project ids must be strings.',
+          );
+        }
+
+        requestedIds.push(item.id);
+      }
+
+      if (new Set(requestedIds).size !== requestedIds.length) {
+        throw new BoardError(
+          'INVALID_PROJECTS',
+          'Project ids must be unique in the request.',
+        );
+      }
+
+      for (const id of requestedIds) {
+        if (!byId.has(id)) {
+          throw new BoardError(
+            'PROJECT_NOT_FOUND',
+            `Project with id "${id}" does not exist.`,
+            { availableProjects: [...byId.keys()] },
+          );
+        }
+      }
+
       const used = new Set<string>();
       const next: Project[] = [];
 
       for (const item of requested) {
-        let existing = item.id ? byId.get(item.id) : undefined;
-        if (existing && used.has(existing.id)) {
-          existing = undefined;
-        }
-
-        if (!existing) {
-          const candidate = byName.get(item.name);
-          if (candidate && !used.has(candidate.id)) {
-            existing = candidate;
-          }
-        }
+        // Items without an id match by name to stay id-stable for callers
+        // that send names only; anything else is a new project.
+        const existing =
+          item.id === undefined
+            ? (() => {
+                const candidate = byName.get(item.name);
+                return candidate && !used.has(candidate.id)
+                  ? candidate
+                  : undefined;
+              })()
+            : byId.get(item.id);
 
         const id = existing ? existing.id : uuidv4();
         used.add(id);

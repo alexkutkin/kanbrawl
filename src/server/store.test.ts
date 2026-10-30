@@ -486,6 +486,21 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
       });
     });
 
+    it('writes a backup copy before upgrading an existing database', () => {
+      withTemporaryDatabase((databasePath) => {
+        createLegacyDatabase(databasePath);
+        new BoardStore(databasePath, { watch: false }).dispose();
+        expect(existsSync(`${databasePath}-backup-v0`)).toBe(true);
+      });
+    });
+
+    it('writes no backup for a freshly created database', () => {
+      withTemporaryDatabase((databasePath) => {
+        new BoardStore(databasePath, { watch: false }).dispose();
+        expect(existsSync(`${databasePath}-backup-v0`)).toBe(false);
+      });
+    });
+
     it('is safe to re-run on an already migrated database', () => {
       withTemporaryDatabase((databasePath) => {
         createLegacyDatabase(databasePath);
@@ -1264,6 +1279,41 @@ CREATE INDEX IF NOT EXISTS attachments_task_idx ON attachments(task_id);
 
       expect(store.getProjects()).toEqual([]);
       expect(store.getBoard().projectsRevision).toBe(0);
+    });
+
+    it('rejects unknown project ids instead of minting replacements', () => {
+      const { first } = createCatalog();
+      const error = expectBoardError(() =>
+        store.updateProjects([
+          { id: first.id, name: 'Kept', folder: '/a' },
+          {
+            id: '00000000-0000-0000-0000-000000000000',
+            name: 'Ghost',
+            folder: '/b',
+          },
+        ]),
+      );
+      expect(error.code).toBe('PROJECT_NOT_FOUND');
+      expect(store.getProjects()).toHaveLength(2);
+    });
+
+    it('rejects duplicate ids and non-object items in the request', () => {
+      const { first } = createCatalog();
+
+      const duplicated = expectBoardError(() =>
+        store.updateProjects([
+          { id: first.id, name: 'A', folder: '/a' },
+          { id: first.id, name: 'B', folder: '/b' },
+        ]),
+      );
+      expect(duplicated.code).toBe('INVALID_PROJECTS');
+
+      const malformed = expectBoardError(() =>
+        store.updateProjects([null as unknown as Partial<Project>]),
+      );
+      expect(malformed.code).toBe('INVALID_PROJECTS');
+
+      expect(store.getProjects()).toHaveLength(2);
     });
 
     it('rolls back the whole change when one item is rejected', () => {

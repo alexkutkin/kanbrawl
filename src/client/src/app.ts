@@ -39,9 +39,9 @@ import {
   createFilter,
   hiddenTaskCount,
   isTaskVisible,
+  pruneFilter,
   toggleAllProjects,
   toggleProjectFilter,
-  removeProjectFromFilter,
   unclassifiedTaskCount,
   type TaskFilter,
 } from './task-filter.js';
@@ -1315,6 +1315,7 @@ export class KanbrawlApp extends LitElement {
   }
 
   private handleSnapshot(snapshot: BoardSnapshots) {
+    const previous = this.session.board;
     this.session = snapshot;
 
     if (snapshot.lastSyncAt !== undefined) {
@@ -1341,6 +1342,41 @@ export class KanbrawlApp extends LitElement {
       this.dispatch({ type: 'taskRemoved', taskId: openTaskId });
       this.syncHashAfterClose();
       this.notify('That task no longer exists. It may have been deleted.');
+    }
+
+    this.syncQuickFilter(previous, snapshot.board);
+    this.announceFilterHides(previous, snapshot.board);
+  }
+
+  /**
+   * Re-syncs the quick-filter selection whenever the project catalog changes,
+   * including changes made remotely (another client, an agent over MCP).
+   */
+  private syncQuickFilter(previous: Board, board: Board) {
+    const ids = board.projects.map((project) => project.id);
+    const unchanged =
+      previous.projects.length === board.projects.length &&
+      previous.projects.every((project, index) => project.id === ids[index]);
+    if (unchanged) return;
+    this.taskFilter = pruneFilter(this.taskFilter, ids);
+  }
+
+  /**
+   * Announces tasks whose project change hid them from the current filter.
+   * Every change — local or remote — flows through the same snapshots, so a
+   * single detector here covers both without double announces.
+   */
+  private announceFilterHides(previous: Board, board: Board) {
+    const before = new Map(previous.tasks.map((task) => [task.id, task]));
+    for (const task of board.tasks) {
+      const earlier = before.get(task.id);
+      if (!earlier || earlier.projectId === task.projectId) continue;
+      if (
+        isTaskVisible(this.taskFilter, earlier) &&
+        !isTaskVisible(this.taskFilter, task)
+      ) {
+        this.announceFilteredOut(earlier, task);
+      }
     }
   }
 
@@ -1639,14 +1675,9 @@ export class KanbrawlApp extends LitElement {
   private async handleUpdateTask(e: CustomEvent<UpdateTaskDetail>) {
     const { id, resolve, reject, ...fields } = e.detail;
     try {
-      const before = this.board.tasks.find((task) => task.id === id);
-      const updated = await this.boardSession.updateTask(id, {
-        ...fields,
-        actor: 'web',
-      });
+      await this.boardSession.updateTask(id, { ...fields, actor: 'web' });
       resolve?.();
       this.clearError();
-      this.announceFilteredOut(before, updated);
     } catch (error) {
       if (reject) {
         reject(this.message(error));
@@ -1731,7 +1762,7 @@ export class KanbrawlApp extends LitElement {
 
     this.dispatch({ type: 'submit' });
     try {
-      const updated = await this.boardSession.updateTask(dialog.base.id, {
+      await this.boardSession.updateTask(dialog.base.id, {
         title,
         description: dialog.fields.description,
         priority: dialog.fields.priority,
@@ -1742,7 +1773,6 @@ export class KanbrawlApp extends LitElement {
       });
       this.dispatch({ type: 'succeed' });
       this.clearError();
-      this.announceFilteredOut(dialog.base, updated);
     } catch (error) {
       this.dispatch({ type: 'fail', message: this.conflictMessage(error) });
     }
@@ -1960,7 +1990,6 @@ export class KanbrawlApp extends LitElement {
     const { projects, expectedRevision, resolve, reject } = e.detail;
     try {
       await this.boardSession.updateProjects(projects, expectedRevision);
-      this.pruneFilterToKnownProjects();
       resolve?.();
       this.clearError();
     } catch (error) {
@@ -2274,19 +2303,6 @@ export class KanbrawlApp extends LitElement {
 
   private handleShowAllProjects() {
     this.taskFilter = createFilter();
-  }
-
-  /** A deleted project must disappear from the filter selection. */
-  private pruneFilterToKnownProjects() {
-    if (this.taskFilter.mode !== 'selected') return;
-    const known = new Set(this.filterProjectIds);
-    for (const id of this.taskFilter.ids.filter((id) => !known.has(id))) {
-      this.taskFilter = removeProjectFromFilter(
-        this.taskFilter,
-        id,
-        this.filterProjectIds,
-      );
-    }
   }
 
   /** Announces a task that just left the current filter, keeping it reachable. */
