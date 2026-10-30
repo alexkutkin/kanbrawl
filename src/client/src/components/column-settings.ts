@@ -1,28 +1,39 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
-import type { Column, SortBy, SortOrder, Task } from '../../../shared/board.js';
+import type {
+  Column,
+  Project,
+  SortBy,
+  SortOrder,
+  Task,
+} from '../../../shared/board.js';
 import './app-button.js';
 
 // `crypto.randomUUID` is secure-context only, and the board is served over
 // plain HTTP on the LAN. The draft id just needs to be unique within the
-// dialog; the server assigns the real one when the column is saved.
-function createColumnId(): string {
+// dialog; the server assigns the real one when the entry is saved.
+function createDraftId(): string {
   if (typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
   }
 
-  return `column-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return `draft-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 @customElement('kanbrawl-column-settings')
 export class KanbrawlColumnSettings extends LitElement {
   @property({ type: Array }) columns: Column[] = [];
+  @property({ type: Array }) projects: Project[] = [];
+  @property({ type: Number }) projectsRevision = 0;
   @property({ type: Array }) tasks: Task[] = [];
   @state() private editColumns: Column[] = [];
+  @state() private editProjects: Project[] = [];
   @state() private open = false;
   @state() private pending = false;
   @state() private error: string | undefined;
   @state() private moveTo = '';
+  private openedProjectsRevision = 0;
+  private projectsDirty = false;
 
   static styles = css`
     :host {
@@ -85,20 +96,20 @@ export class KanbrawlColumnSettings extends LitElement {
       margin: 0 0 16px;
     }
 
-    .column-list {
+    .entry-list {
       display: flex;
       flex-direction: column;
       gap: 8px;
       margin-bottom: 12px;
     }
 
-    .column-row {
+    .entry-row {
       display: flex;
       gap: 8px;
       align-items: center;
     }
 
-    .column-row input {
+    .entry-row input {
       flex: 1;
       min-width: 0;
       padding: 8px 10px;
@@ -113,7 +124,7 @@ export class KanbrawlColumnSettings extends LitElement {
       box-sizing: border-box;
     }
 
-    .column-row input:focus {
+    .entry-row input:focus {
       border-color: var(--accent);
     }
 
@@ -139,16 +150,57 @@ export class KanbrawlColumnSettings extends LitElement {
       opacity: 0.35;
     }
 
-    .add-column-btn {
+    .add-btn {
       width: 100%;
       margin-bottom: 16px;
     }
 
-    .add-column-btn::part(button) {
+    .add-btn::part(button) {
       min-height: 36px;
       padding: 8px;
       border-style: dashed;
       font-size: 12px;
+    }
+
+    .projects-section {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border-default);
+    }
+
+    .folder-row {
+      display: flex;
+      gap: 6px;
+      padding: 0 0 0 32px;
+      margin-top: -4px;
+    }
+
+    .folder-row input {
+      flex: 1;
+      min-width: 0;
+      padding: 5px 8px;
+      background: var(--bg-input);
+      border: 1px solid var(--border-input);
+      border-radius: 5px;
+      color: var(--text-secondary);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 11px;
+      outline: none;
+      transition: border-color 0.2s ease;
+      box-sizing: border-box;
+    }
+
+    .folder-row input:focus {
+      border-color: var(--accent);
+    }
+
+    .folder-label {
+      font-size: 11px;
+      color: var(--text-dimmed);
+      font-family: 'Space Mono', monospace;
+      letter-spacing: 0.5px;
+      align-self: center;
+      flex-shrink: 0;
     }
 
     .move-note {
@@ -271,6 +323,9 @@ export class KanbrawlColumnSettings extends LitElement {
 
   show() {
     this.editColumns = structuredClone(this.columns);
+    this.editProjects = structuredClone(this.projects);
+    this.openedProjectsRevision = this.projectsRevision;
+    this.projectsDirty = false;
     this.pending = false;
     this.error = undefined;
     this.moveTo = '';
@@ -283,7 +338,7 @@ export class KanbrawlColumnSettings extends LitElement {
     const { dialog } = this;
     if (dialog && !dialog.open) dialog.showModal();
     this.shadowRoot
-      ?.querySelector<HTMLInputElement>('.column-row input')
+      ?.querySelector<HTMLInputElement>('.entry-row input')
       ?.focus();
   }
 
@@ -338,15 +393,16 @@ export class KanbrawlColumnSettings extends LitElement {
     this.editColumns = [
       ...this.editColumns,
       {
-        id: createColumnId(),
+        id: createDraftId(),
         name: '',
         sortBy: 'created',
         sortOrder: 'asc',
       },
     ];
     await this.updateComplete;
-    const inputs =
-      this.shadowRoot?.querySelectorAll<HTMLInputElement>('.column-row input');
+    const inputs = this.shadowRoot?.querySelectorAll<HTMLInputElement>(
+      '.columns-list input',
+    );
     inputs?.[inputs.length - 1]?.focus();
   }
 
@@ -361,6 +417,49 @@ export class KanbrawlColumnSettings extends LitElement {
     const columns = [...this.editColumns];
     [columns[index], columns[target]] = [columns[target], columns[index]];
     this.editColumns = columns;
+  }
+
+  private updateProjectName(index: number, value: string) {
+    this.projectsDirty = true;
+    this.editProjects = this.editProjects.map((project, index_) =>
+      index_ === index ? { ...project, name: value } : project,
+    );
+  }
+
+  private updateProjectFolder(index: number, value: string) {
+    this.projectsDirty = true;
+    this.editProjects = this.editProjects.map((project, index_) =>
+      index_ === index ? { ...project, folder: value } : project,
+    );
+  }
+
+  private async addProject() {
+    this.projectsDirty = true;
+    this.editProjects = [
+      ...this.editProjects,
+      { id: createDraftId(), name: '', folder: '' },
+    ];
+    await this.updateComplete;
+    const inputs = this.shadowRoot?.querySelectorAll<HTMLInputElement>(
+      '.projects-list .entry-row input',
+    );
+    inputs?.[inputs.length - 1]?.focus();
+  }
+
+  private removeProject(index: number) {
+    this.projectsDirty = true;
+    this.editProjects = this.editProjects.filter(
+      (_, index_) => index_ !== index,
+    );
+  }
+
+  private moveProject(index: number, direction: -1 | 1) {
+    const target = index + direction;
+    if (target < 0 || target >= this.editProjects.length) return;
+    this.projectsDirty = true;
+    const projects = [...this.editProjects];
+    [projects[index], projects[target]] = [projects[target], projects[index]];
+    this.editProjects = projects;
   }
 
   private get removedColumns(): Array<{ column: Column; count: number }> {
@@ -388,10 +487,15 @@ export class KanbrawlColumnSettings extends LitElement {
       .map((column) => column.name.trim())
       .filter((name) => name.length > 0);
     if (trimmed.length === 0) return false;
-    return new Set(trimmed).size === trimmed.length;
+    if (new Set(trimmed).size !== trimmed.length) return false;
+
+    const projectNames = this.editProjects
+      .map((project) => project.name.trim())
+      .filter((name) => name.length > 0);
+    return new Set(projectNames).size === projectNames.length;
   }
 
-  private save() {
+  private async save() {
     if (this.pending || !this.isValid) return;
     this.syncMoveTo();
 
@@ -399,29 +503,65 @@ export class KanbrawlColumnSettings extends LitElement {
       .filter((column) => column.name.trim().length > 0)
       .map((column) => ({ ...column, name: column.name.trim() }));
     const moveTo = this.removedColumns.length > 0 ? this.moveTo : undefined;
+    const projects = this.editProjects
+      .filter((project) => project.name.trim().length > 0)
+      .map((project) => ({ ...project, name: project.name.trim() }));
 
     this.pending = true;
     this.error = undefined;
-    this.dispatchEvent(
-      new CustomEvent('update-columns', {
-        detail: {
-          columns,
-          moveTo,
-          resolve: () => {
-            this.pending = false;
-            const { dialog } = this;
-            if (dialog?.open) dialog.close();
-            else this.open = false;
+    const columnsError = await this.dispatchChange('update-columns', {
+      columns,
+      moveTo,
+    });
+    if (columnsError !== undefined) {
+      this.pending = false;
+      this.error = columnsError;
+      return;
+    }
+
+    // The UI always sends the revision the draft was based on, so a
+    // concurrent change is rejected with CONFLICT instead of being
+    // overwritten. An untouched project list is not written back at all.
+    if (this.projectsDirty) {
+      const projectsError = await this.dispatchChange('update-projects', {
+        projects,
+        expectedRevision: this.openedProjectsRevision,
+      });
+      if (projectsError !== undefined) {
+        this.pending = false;
+        this.error = projectsError;
+        return;
+      }
+    }
+
+    this.pending = false;
+
+    const { dialog } = this;
+    if (dialog?.open) dialog.close();
+    else this.open = false;
+  }
+
+  private async dispatchChange(
+    type: string,
+    detail: Record<string, unknown>,
+  ): Promise<string | undefined> {
+    return new Promise((resolve) => {
+      this.dispatchEvent(
+        new CustomEvent(type, {
+          detail: {
+            ...detail,
+            resolve() {
+              resolve(undefined);
+            },
+            reject(message: string) {
+              resolve(message);
+            },
           },
-          reject: (message: string) => {
-            this.pending = false;
-            this.error = message;
-          },
-        },
-        bubbles: true,
-        composed: true,
-      }),
-    );
+          bubbles: true,
+          composed: true,
+        }),
+      );
+    });
   }
 
   private renderMoveNote() {
@@ -459,8 +599,8 @@ export class KanbrawlColumnSettings extends LitElement {
         class="settings-btn"
         variant="outline"
         icon
-        title="Configure columns"
-        aria-label="Configure columns"
+        title="Configure columns and projects"
+        aria-label="Configure columns and projects"
         @click=${this.show}
       >
         ⚙
@@ -481,10 +621,10 @@ export class KanbrawlColumnSettings extends LitElement {
                 Agents refer to columns by name. Renaming a column changes the
                 name they must use; tasks stay where they are.
               </p>
-              <div class="column-list">
+              <div class="entry-list columns-list">
                 ${this.editColumns.map(
                   (column, index) => html`
-                    <div class="column-row">
+                    <div class="entry-row">
                       <div class="move-btns">
                         <kanbrawl-button
                           class="move-btn"
@@ -580,7 +720,7 @@ export class KanbrawlColumnSettings extends LitElement {
                 )}
               </div>
               <kanbrawl-button
-                class="add-column-btn"
+                class="add-btn"
                 variant="outline"
                 block
                 ?disabled=${this.pending}
@@ -589,6 +729,104 @@ export class KanbrawlColumnSettings extends LitElement {
                 + Add column
               </kanbrawl-button>
               ${this.renderMoveNote()}
+              <section class="projects-section">
+                <h2 class="modal-title" id="projects-dialog-title">Projects</h2>
+                <p class="modal-hint">
+                  Projects group work around one code base. The folder is plain
+                  metadata: the server stores it as given and never checks the
+                  filesystem. Agents manage the same list over MCP.
+                </p>
+                <div class="entry-list projects-list">
+                  ${this.editProjects.map(
+                    (project, index) => html`
+                      <div class="entry-row">
+                        <div class="move-btns">
+                          <kanbrawl-button
+                            class="move-btn"
+                            variant="ghost"
+                            icon
+                            size="sm"
+                            ?disabled=${index === 0 || this.pending}
+                            @click=${() => {
+                              this.moveProject(index, -1);
+                            }}
+                            title="Move up"
+                            aria-label="Move ${project.name || 'project'} up"
+                          >
+                            ▲
+                          </kanbrawl-button>
+                          <kanbrawl-button
+                            class="move-btn"
+                            variant="ghost"
+                            icon
+                            size="sm"
+                            ?disabled=${index ===
+                              this.editProjects.length - 1 || this.pending}
+                            @click=${() => {
+                              this.moveProject(index, 1);
+                            }}
+                            title="Move down"
+                            aria-label="Move ${project.name || 'project'} down"
+                          >
+                            ▼
+                          </kanbrawl-button>
+                        </div>
+                        <input
+                          type="text"
+                          .value=${project.name}
+                          placeholder="Project name"
+                          aria-label="Project name"
+                          ?disabled=${this.pending}
+                          @input=${(e: InputEvent) => {
+                            this.updateProjectName(
+                              index,
+                              (e.target as HTMLInputElement).value,
+                            );
+                          }}
+                        />
+                        <kanbrawl-button
+                          class="remove-btn"
+                          variant="danger-outline"
+                          icon
+                          ?disabled=${this.pending}
+                          @click=${() => {
+                            this.removeProject(index);
+                          }}
+                          title="Remove project"
+                          aria-label="Remove ${project.name || 'project'}"
+                        >
+                          ✕
+                        </kanbrawl-button>
+                      </div>
+                      <div class="folder-row">
+                        <span class="folder-label">Folder</span>
+                        <input
+                          type="text"
+                          .value=${project.folder}
+                          placeholder="Path to the project code folder"
+                          aria-label="Project folder"
+                          ?disabled=${this.pending}
+                          @input=${(e: InputEvent) => {
+                            this.updateProjectFolder(
+                              index,
+                              (e.target as HTMLInputElement).value,
+                            );
+                          }}
+                        />
+                      </div>
+                    `,
+                  )}
+                </div>
+                <kanbrawl-button
+                  class="add-btn"
+                  variant="outline"
+                  block
+                  ?disabled=${this.pending}
+                  @click=${this.addProject}
+                >
+                  + Add project
+                </kanbrawl-button>
+              </section>
               ${this.error
                 ? html`<div class="form-error" role="alert">${this.error}</div>`
                 : nothing}

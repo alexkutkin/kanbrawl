@@ -4,11 +4,13 @@ import {
   type Board,
   type BoardEvent,
   type Column,
+  type Project,
   type Task,
 } from '../../shared/board.js';
 import type {
   AttachmentInput,
   CreateTaskFields,
+  ProjectInput,
   UpdateTaskFields,
 } from './api.js';
 
@@ -37,6 +39,10 @@ export type BoardCommands = {
     columns: Column[],
     moveTo?: string,
   ): Promise<{ columns: Column[] }>;
+  updateProjects(
+    projects: ProjectInput[],
+    expectedRevision?: number,
+  ): Promise<{ projects: Project[]; revision: number }>;
   addAttachment(
     taskId: string,
     image: AttachmentInput,
@@ -121,6 +127,24 @@ export class BoardSession {
     const result = await this.commands.updateColumns(columns, moveTo);
     this.update({
       board: { ...this.snapshot.board, columns: result.columns },
+    });
+    await this.refresh();
+  }
+
+  async updateProjects(
+    projects: ProjectInput[],
+    expectedRevision?: number,
+  ): Promise<void> {
+    const result = await this.commands.updateProjects(
+      projects,
+      expectedRevision,
+    );
+    this.update({
+      board: {
+        ...this.snapshot.board,
+        projects: result.projects,
+        projectsRevision: result.revision,
+      },
     });
     await this.refresh();
   }
